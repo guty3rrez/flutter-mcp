@@ -1,0 +1,45 @@
+[package]
+name = "flutter-native-mcp"
+version = "0.1.0"
+edition = "2024"
+authors = ["Felipe Gutiérrez <felipelguty@gmail.com>"]
+description = "Model Context Protocol (MCP) server for native Flutter UI automation and inspection"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "flutter_native_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flutter-native-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# MCP SDK & async runtime
+rmcp = { version = "3.4", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = "0.7"
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+
+# Serialization & schema
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = "1"
+
+# Observability & errors
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0"
+async-trait = "0.1"
+
+[dev-dependencies]
+# BDD & Testing harness
+cucumber = { version = "0.23", features = ["macros"] }
+mockall = "0.15"
+tempfile = "3.17"
+
+[[test]]
+name = "bdd"
+harness = false
+

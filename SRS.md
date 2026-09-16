@@ -208,12 +208,66 @@ El sistema debe permitir referenciar widgets mediante un selector polimórfico f
      - *Modo Zero-Touch*: Capaz de inspeccionar árbol (`ext.flutter.inspector`) en cualquier app debug sin tocar su código.
      - *Modo Driver*: Si la app tiene `enableFlutterDriverExtension()`, habilita inyección completa de gestos (`tap`, `enter_text`, `scroll`).
 
+3. **Arquitectura Hexagonal (Ports & Adapters)** (Decisión Adoptada)
+   El proyecto desacopla estrictamente el dominio de la lógica de transporte y del protocolo MCP:
+
+```
++-----------------------------------------------------------------------------------+
+|                            CAPA DE INFRAESTRUCTURA                                |
+|                                                                                   |
+|  [Adaptador Primario / Driving]               [Adaptadores Secundarios / Driven]  |
+|  * FlutterMcpServer (rmcp stdio)               * WebSocketVmServiceAdapter        |
+|    - Expone herramientas MCP                     (tokio-tungstenite JSON-RPC)     |
+|    - Valida schemas con schemars               * MockVmServiceAdapter             |
+|                                                  (Simulador in-memory de tests)   |
++-----------------------------------------------------------------------------------+
+                               |                              ^
+                 invoca Use Case                              | implementa SPI
+                               v                              |
++-----------------------------------------------------------------------------------+
+|                             CAPA DE APLICACIÓN                                    |
+|                                                                                   |
+|  [Puertos de Entrada / Inbound]               [Puertos de Salida / Outbound SPI]  |
+|  * trait FlutterAppService                    * trait FlutterVmPort (mockable)    |
+|                                                                                   |
+|  [Casos de Uso / Orquestación]                                                    |
+|  * FlutterServiceImpl (orquesta snapshot, taps, hot reload, screenshots)          |
++-----------------------------------------------------------------------------------+
+                               |
+                   opera sobre entidades y reglas
+                               v
++-----------------------------------------------------------------------------------+
+|                              CAPA DE DOMINIO                                      |
+|                                                                                   |
+|  [Entidades y Value Objects]                  [Servicios de Dominio]              |
+|  * WidgetNode (modelo semántico podado)       * TreePruner (algoritmo de poda de  |
+|  * RectBounds (geometría de pantalla)           árbol y descarte de ruido layout) |
+|  * Finder (criterios de selección)            * FinderMatcher                     |
+|  * Gesture (tap, scroll, enter_text)                                              |
++-----------------------------------------------------------------------------------+
+```
+
+4. **Arnés de Pruebas y Métricas de Calidad/Seguridad** (Decisión Adoptada)
+   El proyecto cuenta con un arnés de cinco niveles de verificación automatizada:
+   - **Pruebas Unitarias (`cargo test --lib`)**: Cobertura exhaustiva de las entidades de dominio, el algoritmo de poda `TreePruner` y los casos de uso aislados con `MockFlutterVmPort` (vía `mockall`).
+   - **Pruebas de Comportamiento BDD (`cucumber-rs` + Gherkin)**:
+     - Escenarios en lenguaje natural (`tests/features/*.feature`).
+     - Runner dedicado en `tests/bdd.rs` con el macro `#[derive(World)]`.
+     - Permite validar el comportamiento del snapshot y de interacción desde la perspectiva del agente de IA.
+   - **Pruebas de Integración (`tests/integration_test.rs`)**: Verificación del flujo hexagonal completo conectando el puerto primario con el adaptador secundario.
+   - **Mutation Testing (`cargo-mutants`)**: Validación de la resiliencia del suite de pruebas mutando sistemáticamente el código del dominio (`TreePruner`, finders) para certificar que ningún mutante sobreviva sin test que lo detecte.
+   - **Auditoría de Seguridad y Calidad de Código**:
+     - Linter estricto: `cargo clippy --all-targets -- -D warnings`.
+     - Auditoría de vulnerabilidades en dependencias: `cargo audit` contra la base de datos de RustSec Advisory DB.
+     - Script unificado de verificación: [`scripts/verify_harness.sh`](file:///home/guty_3rrez/Proyectos/flutter-native-mcp/scripts/verify_harness.sh).
+
 ---
 
 ## 8. Roadmap de Iteración
 
-- [ ] **Hito 1**: Congelar decisiones de arquitectura (Lenguaje del MCP y Modo de conexión primario).
-- [ ] **Hito 2**: Spike de conexión y extracción de árbol de widgets podado (`flutter_snapshot`).
-- [ ] **Hito 3**: Implementación de inyección de gestos básicos (`tap`, `enter_text`) y `pump`.
-- [ ] **Hito 4**: Integración de captura visual (`screenshot`) y captura de errores de layout.
-- [ ] **Hito 5**: Empaquetado, documentación de uso y registro en configuración local de MCP.
+- [x] **Hito 1**: Congelar decisiones de arquitectura (Rust + `rmcp` 3.4 + Arquitectura Hexagonal).
+- [x] **Hito 2**: Spike de conexión, implementación de capas Domain, Application e Infrastructure con `TreePruner` y servidor MCP sobre stdio.
+- [x] **Hito 3**: Implementación del arnés completo de pruebas (Unitarias, Integración, BDD Gherkin con Cucumber, Clippy estricto y auditoría RustSec con `cargo audit`).
+- [ ] **Hito 4**: Spike en vivo conectando el binario contra una aplicación Flutter real en Linux (`flutter run -d linux`) y verificando el round-trip de gestos.
+- [ ] **Hito 5**: Empaquetado final y registro en la configuración de clientes MCP locales.
+
