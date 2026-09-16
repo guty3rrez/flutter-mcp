@@ -58,6 +58,8 @@ impl TreePruner {
     /// Poda un árbol de diagnósticos crudo de Flutter (JSON de ext.flutter.inspector)
     /// convirtiéndolo en un árbol compacto de `WidgetNode`
     pub fn prune_diagnostics_tree(json: &Value) -> Option<WidgetNode> {
+        let json = json.get("result").unwrap_or(json);
+
         let widget_type = json
             .get("description")
             .and_then(|d| d.as_str())

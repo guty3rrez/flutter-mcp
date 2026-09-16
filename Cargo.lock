@@ -503,6 +503,7 @@ name = "flutter-native-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "cucumber",
  "futures-util",
  "mockall",

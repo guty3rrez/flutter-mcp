@@ -152,6 +152,7 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
             "ext.flutter.inspector.getRootWidgetSummaryTree",
             json!({
                 "isolateId": isolate_id,
+                "objectGroup": "flutter-native-mcp",
                 "subtreeDepth": subtree_depth
             }),
         )
@@ -264,14 +265,26 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
     }
 
     async fn capture_screenshot(&self) -> Result<Vec<u8>> {
-        let result = self.execute_driver_command("screenshot", json!({})).await?;
-        if let Some(screenshot_b64) = result.get("screenshot").and_then(|s| s.as_str()) {
-            // Decodificar Base64 o retornar como raw
-            Ok(screenshot_b64.as_bytes().to_vec())
+        let result = self
+            .execute_driver_command("screenshot", json!({ "timeout": "5000" }))
+            .await?;
+        
+        let b64_opt = result
+            .get("response")
+            .and_then(|r| r.get("data"))
+            .or_else(|| result.get("data").and_then(|d| if d.is_object() { d.get("data") } else { Some(d) }))
+            .or_else(|| result.get("screenshot"))
+            .and_then(|s| s.as_str());
+
+        if let Some(screenshot_b64) = b64_opt {
+            use base64::prelude::*;
+            BASE64_STANDARD
+                .decode(screenshot_b64.trim())
+                .map_err(|e| ApplicationError::DriverError(format!("Error decodificando screenshot Base64: {e}")))
         } else {
-            Err(ApplicationError::DriverError(
-                "No se recibió captura en respuesta".into(),
-            ))
+            Err(ApplicationError::DriverError(format!(
+                "No se recibió captura en respuesta. Respuesta: {result:?}"
+            )))
         }
     }
 }
