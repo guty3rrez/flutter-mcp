@@ -25,9 +25,9 @@ Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dib
 
 ---
 
-## 🛠️ Catálogo de Herramientas MCP (13 Herramientas)
+## 🛠️ Catálogo de Herramientas MCP (16 Herramientas)
 
-`flutter-mcp` expone 13 herramientas a través del Model Context Protocol:
+`flutter-mcp` expone 16 herramientas a través del Model Context Protocol:
 
 | Herramienta | Parámetros | Descripción |
 | :--- | :--- | :--- |
@@ -44,6 +44,9 @@ Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dib
 | `flutter_screenshot` | `save_path: Option<String>` | Captura de pantalla nativa (PNG) con soporte de guardado en disco. |
 | `flutter_hot_reload` | *(ninguno)* | Recarga en caliente instantánea sin perder el estado de la aplicación. |
 | `flutter_hot_restart` | *(ninguno)* | Reinicio completo y reensamblado del árbol de widgets en la app Flutter. |
+| `flutter_get_logs` | `filter`, `source`, `limit` | Lee stdout/stderr/`dart:developer.log` acumulados desde la conexión. Por defecto, las últimas 100 líneas. |
+| `flutter_get_errors` | `limit`, `precise` | Lee errores de framework (red screens) que la app imprimió por stdout/stderr. **Limitación validada:** no detecta excepciones Dart/async genéricas no capturadas — el engine las reporta directo a stderr nativo, sin pasar por el sink `dart:io` que esta tool observa; `precise: true` (modo pausa en excepción) tampoco las capturó en pruebas contra un dispositivo real. |
+| `flutter_get_performance` | `window_ms`, `include_frames` | Obtiene un reporte de jank/build/raster derivado del stream `Timeline` acumulado. |
 
 ---
 
@@ -148,12 +151,12 @@ graph LR
     subgraph Core [Núcleo de Dominio y Aplicación]
         AppPort["FlutterAppService (Puerto Inbound)"]
         UseCase["FlutterServiceImpl (Casos de Uso)"]
-        Domain["TreePruner | Finder | Gesture"]
+        Domain["TreePruner | LogParser | ErrorDetector | TimelineAnalyzer"]
         VMPort["FlutterVmPort (SPI Outbound)"]
     end
 
     subgraph OutboundAdapter [Adaptador Secundario / Outbound]
-        WSAdapter["WebSocketVmServiceAdapter (tokio-tungstenite)"]
+        WSAdapter["WebSocketVmServiceAdapter (tokio-tungstenite + reader de streams en background)"]
         MockAdapter["MockVmServiceAdapter (Pruebas)"]
     end
 

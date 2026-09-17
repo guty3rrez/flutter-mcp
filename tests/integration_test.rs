@@ -1,4 +1,8 @@
-use flutter_mcp::{Finder, FlutterAppService, FlutterServiceImpl, MockVmServiceAdapter};
+use flutter_mcp::{
+    ErrorSource, Finder, FlutterAppService, FlutterError, FlutterServiceImpl, LogEntry, LogFilter,
+    LogSource, MockVmServiceAdapter,
+};
+use serde_json::json;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -93,4 +97,118 @@ async fn test_full_hexagonal_flow_with_mock_vm() {
         .disconnect()
         .await
         .expect("Debe desconectar limpiamente");
+}
+
+#[tokio::test]
+async fn test_get_logs_filters_by_source_text_and_limit() {
+    let mock_adapter = Arc::new(MockVmServiceAdapter::new());
+    let app_service = FlutterServiceImpl::new(mock_adapter.clone());
+    app_service
+        .connect("ws://127.0.0.1:45678/ws")
+        .await
+        .expect("Debe conectar");
+
+    mock_adapter
+        .push_mock_log(LogEntry {
+            timestamp_ms: 1,
+            source: LogSource::Stdout,
+            message: "iniciando app".into(),
+        })
+        .await;
+    mock_adapter
+        .push_mock_log(LogEntry {
+            timestamp_ms: 2,
+            source: LogSource::Stderr,
+            message: "warning de red".into(),
+        })
+        .await;
+    mock_adapter
+        .push_mock_log(LogEntry {
+            timestamp_ms: 3,
+            source: LogSource::Stdout,
+            message: "conexión de red establecida".into(),
+        })
+        .await;
+
+    let logs = app_service
+        .get_logs(LogFilter {
+            contains: Some("red".into()),
+            source: Some("stdout".into()),
+            limit: 100,
+        })
+        .await
+        .expect("Debe leer logs filtrados");
+
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].message, "conexión de red establecida");
+}
+
+#[tokio::test]
+async fn test_get_errors_default_is_passive_and_precise_enables_pause_mode() {
+    let mock_adapter = Arc::new(MockVmServiceAdapter::new());
+    let app_service = FlutterServiceImpl::new(mock_adapter.clone());
+    app_service
+        .connect("ws://127.0.0.1:45678/ws")
+        .await
+        .expect("Debe conectar");
+
+    mock_adapter
+        .push_mock_error(FlutterError {
+            timestamp_ms: 1,
+            message: "Null check operator used on a null value".into(),
+            stack_trace: None,
+            source: ErrorSource::StdoutHeuristic,
+            occurrences: 1,
+        })
+        .await;
+
+    let errors = app_service
+        .get_errors(false)
+        .await
+        .expect("Debe leer errores en modo pasivo");
+    assert_eq!(errors.len(), 1);
+    assert!(!mock_adapter.is_precise_error_mode_enabled());
+
+    app_service
+        .get_errors(true)
+        .await
+        .expect("Debe activar modo preciso");
+    assert!(mock_adapter.is_precise_error_mode_enabled());
+}
+
+#[tokio::test]
+async fn test_get_performance_summarizes_timeline_events() {
+    let mock_adapter = Arc::new(MockVmServiceAdapter::new());
+    let app_service = FlutterServiceImpl::new(mock_adapter.clone());
+    app_service
+        .connect("ws://127.0.0.1:45678/ws")
+        .await
+        .expect("Debe conectar");
+
+    mock_adapter
+        .push_mock_timeline_event(json!({ "name": "Animator::BeginFrame", "ph": "B", "ts": 0 }))
+        .await;
+    mock_adapter
+        .push_mock_timeline_event(
+            json!({ "name": "Animator::BeginFrame", "ph": "E", "ts": 20_000 }),
+        )
+        .await;
+    mock_adapter
+        .push_mock_timeline_event(
+            json!({ "name": "Rasterizer::DrawToSurfaces", "ph": "B", "ts": 20_000 }),
+        )
+        .await;
+    mock_adapter
+        .push_mock_timeline_event(
+            json!({ "name": "Rasterizer::DrawToSurfaces", "ph": "E", "ts": 25_000 }),
+        )
+        .await;
+
+    let report = app_service
+        .get_performance(None)
+        .await
+        .expect("Debe generar el reporte");
+
+    assert_eq!(report.frame_count, 1);
+    assert_eq!(report.janky_count, 1); // 20_000 + 5_000 = 25_000us > 16_600us de presupuesto
 }

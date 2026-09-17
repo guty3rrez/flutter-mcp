@@ -1,8 +1,10 @@
 use crate::application::error::{ApplicationError, Result};
 use crate::application::ports::inbound::FlutterAppService;
 use crate::application::ports::outbound::FlutterVmPort;
-use crate::domain::entities::{Finder, Gesture, WidgetNode};
-use crate::domain::services::TreePruner;
+use crate::domain::entities::{
+    Finder, FlutterError, Gesture, LogEntry, LogFilter, PerformanceReport, WidgetNode,
+};
+use crate::domain::services::{DEFAULT_FRAME_BUDGET_US, TimelineAnalyzer, TreePruner};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -88,6 +90,55 @@ impl FlutterAppService for FlutterServiceImpl {
 
     async fn take_screenshot(&self) -> Result<Vec<u8>> {
         self.vm_port.capture_screenshot().await
+    }
+
+    async fn get_logs(&self, filter: LogFilter) -> Result<Vec<LogEntry>> {
+        let mut entries = self.vm_port.get_logs().await?;
+
+        if let Some(source) = &filter.source {
+            entries.retain(|e| e.source_label().eq_ignore_ascii_case(source));
+        }
+        if let Some(needle) = &filter.contains {
+            let needle_lower = needle.to_lowercase();
+            entries.retain(|e| e.message.to_lowercase().contains(&needle_lower));
+        }
+
+        if filter.limit > 0 && entries.len() > filter.limit {
+            let split_at = entries.len() - filter.limit;
+            entries = entries.split_off(split_at);
+        }
+
+        Ok(entries)
+    }
+
+    async fn get_errors(&self, precise: bool) -> Result<Vec<FlutterError>> {
+        if precise {
+            self.vm_port.enable_precise_error_mode(true).await?;
+        }
+        self.vm_port.get_errors().await
+    }
+
+    async fn get_performance(&self, window_ms: Option<u64>) -> Result<PerformanceReport> {
+        let mut events = self.vm_port.get_raw_timeline_events().await?;
+
+        if let Some(window_ms) = window_ms {
+            let max_ts = events
+                .iter()
+                .filter_map(|e| e.get("ts").and_then(|t| t.as_i64()))
+                .max();
+            if let Some(max_ts) = max_ts {
+                let cutoff = max_ts - (window_ms as i64 * 1000);
+                events.retain(|e| {
+                    e.get("ts")
+                        .and_then(|t| t.as_i64())
+                        .map(|ts| ts >= cutoff)
+                        .unwrap_or(false)
+                });
+            }
+        }
+
+        let frames = TimelineAnalyzer::compute_frame_timings(&events, DEFAULT_FRAME_BUDGET_US);
+        Ok(TimelineAnalyzer::summarize(&frames))
     }
 }
 
@@ -213,5 +264,131 @@ mod tests {
             .wait_for(finder, 3000)
             .await
             .expect("WaitFor should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_applies_filter_and_limit() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm.expect_get_logs().times(1).returning(|| {
+            Ok(vec![
+                LogEntry {
+                    timestamp_ms: 1,
+                    source: crate::domain::entities::LogSource::Stdout,
+                    message: "primer log".into(),
+                },
+                LogEntry {
+                    timestamp_ms: 2,
+                    source: crate::domain::entities::LogSource::Stderr,
+                    message: "error de red".into(),
+                },
+                LogEntry {
+                    timestamp_ms: 3,
+                    source: crate::domain::entities::LogSource::Stdout,
+                    message: "segundo log de red".into(),
+                },
+            ])
+        });
+
+        let service = FlutterServiceImpl::new(Arc::new(mock_vm));
+        let filter = LogFilter {
+            contains: Some("red".into()),
+            source: Some("stdout".into()),
+            limit: 10,
+        };
+        let logs = service.get_logs(filter).await.expect("Debe filtrar logs");
+
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].message, "segundo log de red");
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_respects_limit_keeping_most_recent() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm.expect_get_logs().times(1).returning(|| {
+            Ok((0..5)
+                .map(|i| LogEntry {
+                    timestamp_ms: i,
+                    source: crate::domain::entities::LogSource::Stdout,
+                    message: format!("log {i}"),
+                })
+                .collect())
+        });
+
+        let service = FlutterServiceImpl::new(Arc::new(mock_vm));
+        let logs = service
+            .get_logs(LogFilter {
+                contains: None,
+                source: None,
+                limit: 2,
+            })
+            .await
+            .expect("Debe limitar logs");
+
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].message, "log 3");
+        assert_eq!(logs[1].message, "log 4");
+    }
+
+    #[tokio::test]
+    async fn test_get_errors_enables_precise_mode_when_requested() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm
+            .expect_enable_precise_error_mode()
+            .with(mockall::predicate::eq(true))
+            .times(1)
+            .returning(|_| Ok(()));
+        mock_vm
+            .expect_get_errors()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        let service = FlutterServiceImpl::new(Arc::new(mock_vm));
+        service
+            .get_errors(true)
+            .await
+            .expect("Debe activar modo preciso y leer errores");
+    }
+
+    #[tokio::test]
+    async fn test_get_errors_skips_precise_mode_by_default() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm.expect_enable_precise_error_mode().times(0);
+        mock_vm
+            .expect_get_errors()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        let service = FlutterServiceImpl::new(Arc::new(mock_vm));
+        service
+            .get_errors(false)
+            .await
+            .expect("Debe leer errores sin activar modo preciso");
+    }
+
+    #[tokio::test]
+    async fn test_get_performance_summarizes_raw_timeline_events() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm
+            .expect_get_raw_timeline_events()
+            .times(1)
+            .returning(|| {
+                Ok(vec![
+                    json!({ "name": "Animator::BeginFrame", "ph": "B", "ts": 0 }),
+                    json!({ "name": "Animator::BeginFrame", "ph": "E", "ts": 8_000 }),
+                    json!({ "name": "Rasterizer::DrawToSurfaces", "ph": "B", "ts": 8_000 }),
+                    json!({ "name": "Rasterizer::DrawToSurfaces", "ph": "E", "ts": 14_000 }),
+                ])
+            });
+
+        let service = FlutterServiceImpl::new(Arc::new(mock_vm));
+        let report = service
+            .get_performance(None)
+            .await
+            .expect("Debe generar reporte de performance");
+
+        assert_eq!(report.frame_count, 1);
+        assert_eq!(report.janky_count, 0);
+        assert_eq!(report.avg_build_us, 8_000);
+        assert_eq!(report.avg_raster_us, 6_000);
     }
 }

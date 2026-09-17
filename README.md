@@ -25,9 +25,9 @@ Flutter bypasses standard operating system DOM hierarchies and renders UI widget
 
 ---
 
-## 🛠️ MCP Tools Reference (13 Tools)
+## 🛠️ MCP Tools Reference (16 Tools)
 
-`flutter-mcp` exposes 13 tools via the Model Context Protocol:
+`flutter-mcp` exposes 16 tools via the Model Context Protocol:
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
@@ -44,6 +44,9 @@ Flutter bypasses standard operating system DOM hierarchies and renders UI widget
 | `flutter_screenshot` | `save_path: Option<String>` | Capture a native PNG screenshot directly from the engine framebuffer. |
 | `flutter_hot_reload` | *(none)* | Trigger an instant Hot Reload without losing application state. |
 | `flutter_hot_restart` | *(none)* | Trigger a complete Hot Restart / Reassemble of the Flutter application. |
+| `flutter_get_logs` | `filter`, `source`, `limit` | Read stdout/stderr/`dart:developer.log` output buffered since connecting. Defaults to the last 100 lines. |
+| `flutter_get_errors` | `limit`, `precise` | Read framework errors (red screens) the app printed to stdout/stderr. **Validated limitation:** does not catch generic uncaught Dart/async exceptions — the engine reports those directly to native stderr, bypassing the `dart:io` sink this tool observes; `precise: true` (exception-pause mode) did not catch that case either in real-device testing. |
+| `flutter_get_performance` | `window_ms`, `include_frames` | Get a jank/build/raster report derived from the accumulated `Timeline` stream. |
 
 ---
 
@@ -148,12 +151,12 @@ graph LR
     subgraph Core [Domain & Application Core]
         AppPort["FlutterAppService (Inbound Port)"]
         UseCase["FlutterServiceImpl (Use Cases)"]
-        Domain["TreePruner | Finder | Gesture"]
+        Domain["TreePruner | LogParser | ErrorDetector | TimelineAnalyzer"]
         VMPort["FlutterVmPort (Outbound SPI)"]
     end
 
     subgraph OutboundAdapter [Outbound Adapter]
-        WSAdapter["WebSocketVmServiceAdapter (tokio-tungstenite)"]
+        WSAdapter["WebSocketVmServiceAdapter (tokio-tungstenite + background stream reader)"]
         MockAdapter["MockVmServiceAdapter (Testing)"]
     end
 

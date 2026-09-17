@@ -1,5 +1,5 @@
 use crate::application::error::Result;
-use crate::domain::entities::{Finder, Gesture};
+use crate::domain::entities::{Finder, FlutterError, Gesture, LogEntry};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -41,4 +41,24 @@ pub trait FlutterVmPort: Send + Sync {
 
     /// Captura un screenshot rasterizado en Base64 o bytes
     async fn capture_screenshot(&self) -> Result<Vec<u8>>;
+
+    /// Devuelve el buffer completo de logs acumulados pasivamente desde la conexión
+    /// (streams `Stdout`/`Stderr`/`Logging`). El filtrado/límite se aplica en la capa de aplicación.
+    async fn get_logs(&self) -> Result<Vec<LogEntry>>;
+
+    /// Devuelve el buffer completo de excepciones no manejadas detectadas desde la conexión
+    /// (heurística pasiva sobre stdout/stderr, más las capturadas en modo preciso si está activo).
+    /// Ver el doc de `ErrorSource` para la limitación validada: ninguno de los dos mecanismos
+    /// detecta excepciones Dart/async genéricas no capturadas, solo errores de framework impresos.
+    async fn get_errors(&self) -> Result<Vec<FlutterError>>;
+
+    /// Activa/desactiva la captura precisa de excepciones vía `setExceptionPauseMode`. En teoría
+    /// pausa el isolate brevemente en cada excepción no manejada para resolver su mensaje/stack
+    /// exacto y lo reanuda de inmediato — pero validado contra una app Flutter real, no disparó
+    /// `PauseException` para una excepción async genérica no capturada (ver doc de `ErrorSource`).
+    async fn enable_precise_error_mode(&self, enabled: bool) -> Result<()>;
+
+    /// Devuelve los eventos crudos del stream `Timeline` acumulados (formato Chrome Trace Event),
+    /// para que la capa de aplicación los transforme en `FrameTiming`/`PerformanceReport`.
+    async fn get_raw_timeline_events(&self) -> Result<Vec<Value>>;
 }

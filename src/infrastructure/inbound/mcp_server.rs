@@ -1,5 +1,5 @@
 use crate::application::ports::inbound::FlutterAppService;
-use crate::domain::entities::Finder;
+use crate::domain::entities::{Finder, LogFilter};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -9,6 +9,22 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// Formatea un timestamp en millis-desde-época como hora del día UTC `HH:MM:SS.mmm`, sin
+/// depender de una crate de fechas: suficiente precisión para correlacionar logs/errores
+/// entre sí durante una sesión de depuración.
+fn format_timestamp_ms(ts: i64) -> String {
+    if ts <= 0 {
+        return "??:??:??.???".to_string();
+    }
+    let millis = ts as u64;
+    let secs_of_day = (millis / 1000) % 86_400;
+    let ms = millis % 1000;
+    let h = secs_of_day / 3600;
+    let m = (secs_of_day % 3600) / 60;
+    let s = secs_of_day % 60;
+    format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+}
 
 fn parse_finder(by: &str, value: String) -> std::result::Result<Finder, String> {
     match by {
@@ -120,6 +136,51 @@ pub struct ScreenshotParams {
     )]
     #[serde(default)]
     pub save_path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct GetLogsParams {
+    #[schemars(description = "Filtrar líneas que contengan este texto (case-insensitive)")]
+    #[serde(default)]
+    pub filter: Option<String>,
+    #[schemars(
+        description = "Restringir a un origen: 'stdout', 'stderr' o 'logging' (dart:developer.log)"
+    )]
+    #[serde(default)]
+    pub source: Option<String>,
+    #[schemars(
+        description = "Máximo de líneas a devolver, las más recientes primero (por defecto 100, para no inundar el contexto)"
+    )]
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct GetErrorsParams {
+    #[schemars(
+        description = "Máximo de errores a devolver, los más recientes primero (por defecto 20)"
+    )]
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[schemars(
+        description = "Si es true, intenta además activar captura precisa vía pausa en excepción (setExceptionPauseMode/PauseException). Advertencia validada contra una app Flutter real: en ese entorno el engine no disparó PauseException para una excepción async no capturada (probablemente porque el propio engine 'maneja' la excepción antes de que el debugger la considere no-manejada) — no asumir que este modo captura lo que el pasivo se pierde. Por defecto false."
+    )]
+    #[serde(default)]
+    pub precise: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct GetPerformanceParams {
+    #[schemars(
+        description = "Acotar el análisis a los últimos N milisegundos de timeline (por defecto: todo el buffer acumulado)"
+    )]
+    #[serde(default)]
+    pub window_ms: Option<u64>,
+    #[schemars(
+        description = "Si es true, incluye el detalle por frame además del resumen agregado (por defecto false)"
+    )]
+    #[serde(default)]
+    pub include_frames: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -399,6 +460,171 @@ impl FlutterMcpServer {
             }
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "Error tomando screenshot: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Leer los logs (stdout/stderr/dart:developer.log) acumulados pasivamente desde que se conectó la app. Por defecto devuelve las últimas 100 líneas; usar 'filter'/'source' para acotar sin gastar contexto."
+    )]
+    async fn flutter_get_logs(
+        &self,
+        Parameters(params): Parameters<GetLogsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let filter = LogFilter {
+            contains: params.filter,
+            source: params.source,
+            limit: params.limit.unwrap_or(100) as usize,
+        };
+
+        match self.app_service.get_logs(filter).await {
+            Ok(entries) => {
+                if entries.is_empty() {
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
+                        "No hay logs que coincidan con el filtro (o aún no se registró ninguno desde la conexión)",
+                    )]));
+                }
+                let text = entries
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            "[{}][{}] {}",
+                            format_timestamp_ms(e.timestamp_ms),
+                            e.source_label(),
+                            e.message
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error obteniendo logs: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Leer errores de framework (red screens: build/layout/paint) que la app haya impreso por stdout/stderr — vía debugPrint por defecto, o un FlutterError.onError personalizado que también imprima. LIMITACIÓN VALIDADA contra una app Flutter real: esto NO detecta excepciones Dart/async genéricas no capturadas, porque el engine las reporta directo a stderr nativo (fuera del sink dart:io que este VM Service observa) y, en la misma prueba, precise=true tampoco las capturó. Útil para errores de widgets, no como red de seguridad general de crashes."
+    )]
+    async fn flutter_get_errors(
+        &self,
+        Parameters(params): Parameters<GetErrorsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let precise = params.precise.unwrap_or(false);
+        let limit = params.limit.unwrap_or(20) as usize;
+
+        match self.app_service.get_errors(precise).await {
+            Ok(mut errors) => {
+                if errors.is_empty() {
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
+                        "No se detectaron excepciones no manejadas desde la conexión",
+                    )]));
+                }
+                if errors.len() > limit {
+                    let split_at = errors.len() - limit;
+                    errors = errors.split_off(split_at);
+                }
+
+                const MAX_STACK_LINES: usize = 10;
+                let text = errors
+                    .iter()
+                    .map(|err| {
+                        let occurrences = if err.occurrences > 1 {
+                            format!(" (x{})", err.occurrences)
+                        } else {
+                            String::new()
+                        };
+                        let mut block = format!(
+                            "[{}]{} {}",
+                            format_timestamp_ms(err.timestamp_ms),
+                            occurrences,
+                            err.message
+                        );
+                        if let Some(stack) = &err.stack_trace {
+                            let lines: Vec<&str> = stack.lines().collect();
+                            let shown = lines
+                                .iter()
+                                .take(MAX_STACK_LINES)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            block.push('\n');
+                            block.push_str(&shown);
+                            if lines.len() > MAX_STACK_LINES {
+                                block.push_str(&format!(
+                                    "\n  ... ({} líneas más de stack, no incluidas)",
+                                    lines.len() - MAX_STACK_LINES
+                                ));
+                            }
+                        }
+                        block
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n---\n");
+                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error obteniendo excepciones: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Obtener un reporte de rendimiento (jank, tiempos de build/raster por frame) derivado del stream Timeline acumulado desde la conexión. Devuelve un resumen agregado por defecto; usar include_frames=true para el detalle frame a frame."
+    )]
+    async fn flutter_get_performance(
+        &self,
+        Parameters(params): Parameters<GetPerformanceParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.app_service.get_performance(params.window_ms).await {
+            Ok(report) => {
+                if report.frame_count == 0 {
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
+                        "No se registraron frames de Timeline en la ventana solicitada (puede que la app no haya generado actividad de UI desde la conexión, o que la ventana sea muy corta)",
+                    )]));
+                }
+                let jank_pct = (report.janky_count as f64 / report.frame_count as f64) * 100.0;
+                let mut text = format!(
+                    "Frames analizados: {}\nFrames con jank: {} ({:.1}%)\nBuild promedio: {}µs\nRaster promedio: {}µs",
+                    report.frame_count,
+                    report.janky_count,
+                    jank_pct,
+                    report.avg_build_us,
+                    report.avg_raster_us
+                );
+                if let Some(worst) = &report.worst_frame {
+                    text.push_str(&format!(
+                        "\nPeor frame: #{} (build={}µs, raster={}µs, jank={})",
+                        worst.frame_number,
+                        worst.build_duration_us,
+                        worst.raster_duration_us,
+                        worst.is_janky
+                    ));
+                }
+                if params.include_frames.unwrap_or(false) {
+                    text.push_str("\n\nDetalle por frame:\n");
+                    text.push_str(
+                        &report
+                            .frames
+                            .iter()
+                            .map(|f| {
+                                format!(
+                                    "#{}: build={}µs raster={}µs jank={}",
+                                    f.frame_number,
+                                    f.build_duration_us,
+                                    f.raster_duration_us,
+                                    f.is_janky
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
+                }
+                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error obteniendo reporte de rendimiento: {e}"
             ))])),
         }
     }

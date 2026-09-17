@@ -8,8 +8,11 @@ pub use application::ports::inbound::FlutterAppService;
 pub use application::ports::outbound::FlutterVmPort;
 pub use application::use_cases::FlutterServiceImpl;
 
-pub use domain::entities::{Finder, Gesture, RectBounds, WidgetNode};
-pub use domain::services::TreePruner;
+pub use domain::entities::{
+    ErrorSource, Finder, FlutterError, FrameTiming, Gesture, LogEntry, LogFilter, LogSource,
+    PerformanceReport, RectBounds, WidgetNode,
+};
+pub use domain::services::{ErrorDetector, LogParser, TimelineAnalyzer, TreePruner};
 
 pub use infrastructure::inbound::FlutterMcpServer;
 pub use infrastructure::outbound::{MockVmServiceAdapter, WebSocketVmServiceAdapter};
