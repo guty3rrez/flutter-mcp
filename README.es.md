@@ -109,6 +109,14 @@ flutter run -d linux -t lib/main_driver.dart
 }
 ```
 
+#### Claude Code (CLI)
+Registra el servidor con el comando `claude mcp add` en vez de editar un archivo de configuración a mano:
+```bash
+claude mcp add flutter_mcp -s user -- /ruta/a/flutter-mcp
+```
+- `-s user` lo deja disponible en todos tus proyectos; usa `-s local` (por defecto) para limitarlo al repo actual, o `-s project` para compartirlo con tu equipo vía `.mcp.json`.
+- Verifica que quedó conectado con `claude mcp list`.
+
 #### Antigravity CLI / Gemini (`~/.gemini/config/mcp_config.json`)
 ```json
 {
