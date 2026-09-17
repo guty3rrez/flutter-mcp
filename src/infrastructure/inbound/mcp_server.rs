@@ -408,6 +408,6 @@ impl FlutterMcpServer {
 impl ServerHandler for FlutterMcpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("flutter-native-mcp", "0.2.0"))
+            .with_server_info(Implementation::new("flutter-mcp", "0.2.0"))
     }
 }

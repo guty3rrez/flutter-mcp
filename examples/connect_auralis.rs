@@ -1,4 +1,4 @@
-use flutter_native_mcp::{
+use flutter_mcp::{
     FlutterAppService, FlutterServiceImpl, FlutterVmPort, WebSocketVmServiceAdapter,
 };
 use std::sync::Arc;
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ Árbol podado obtenido con éxito.");
     println!("\n🔍 Buscando elementos interactivos y con Key en Auralis:");
 
-    fn find_interesting_widgets(node: &flutter_native_mcp::WidgetNode, list: &mut Vec<String>) {
+    fn find_interesting_widgets(node: &flutter_mcp::WidgetNode, list: &mut Vec<String>) {
         if node.key.is_some() || node.text.is_some() || node.is_interactive {
             list.push(format!(
                 "- [{}] key: {:?}, text: {:?}, tooltip: {:?}, interactive: {}",
@@ -64,17 +64,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Probar Interacción Nativa (Tap y EnterText en el buscador)
     println!("\n3. Probando interacción nativa sobre TextField de Auralis...");
-    match service
-        .tap(flutter_native_mcp::Finder::by_type("TextField"))
-        .await
-    {
+    match service.tap(flutter_mcp::Finder::by_type("TextField")).await {
         Ok(_) => println!("✅ ¡TAP EN TEXTFIELD EXITOSO!"),
         Err(e) => println!("⚠️ Error en tap: {e}"),
     }
 
     match service
         .enter_text(
-            flutter_native_mcp::Finder::by_type("TextField"),
+            flutter_mcp::Finder::by_type("TextField"),
             "Daft Punk - Discovery".to_string(),
         )
         .await
@@ -101,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Probar navegación haciendo tap en "Settings"
     println!("\n5. Navegando: haciendo tap nativo en 'Settings'...");
     match service
-        .tap(flutter_native_mcp::Finder::by_text("Settings", true))
+        .tap(flutter_mcp::Finder::by_text("Settings", true))
         .await
     {
         Ok(_) => {

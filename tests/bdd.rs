@@ -1,5 +1,5 @@
 use cucumber::{World, given, then, when};
-use flutter_native_mcp::{TreePruner, WidgetNode};
+use flutter_mcp::{TreePruner, WidgetNode};
 use serde_json::{Value, json};
 
 #[derive(Debug, Default, World)]

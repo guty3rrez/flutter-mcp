@@ -1,0 +1,190 @@
+# Flutter MCP 🚀 (Español)
+
+[![CI Quality Gate](https://github.com/guty3rrez/flutter-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/guty3rrez/flutter-mcp/actions/workflows/ci.yml)
+[![Licencia: AGPL v3](https://img.shields.io/badge/Licencia-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Rust: 1.80+](https://img.shields.io/badge/Rust-1.80%2B-orange.svg?logo=rust)](https://www.rust-lang.org/)
+[![MCP Spec](https://img.shields.io/badge/MCP%20Spec-2024--11--05-green.svg)](https://modelcontextprotocol.io/)
+
+> **Servidor Model Context Protocol (MCP) de alto rendimiento escrito en Rust para automatización nativa de UI, introspección e inspección, y pruebas End-to-End (E2E) en Flutter.**
+
+📖 **[English Version](README.md)**
+
+---
+
+## 💡 ¿Por qué Flutter MCP?
+
+Los agentes autónomos de desarrollo con IA (Claude Desktop, Antigravity, Cursor, Windsurf) interactúan eficazmente con aplicaciones web gracias a herramientas de automatización como Playwright o Puppeteer. Sin embargo, **fallan por completo al intentar interactuar con aplicaciones Flutter nativas** (Linux Desktop, macOS, Windows, Android, iOS).
+
+Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dibuja cada widget directamente sobre un lienzo gráfico de GPU utilizando motores como Skia o Impeller.
+
+**`flutter-mcp` soluciona este problema.** Construido en Rust con Arquitectura Hexagonal:
+- 🔌 **Conexión Directa al Dart VM:** Comunicación bidireccional JSON-RPC 2.0 sobre WebSockets directamente con el motor de Flutter.
+- 🌳 **Cero Ruido de Maquetación (`TreePruner`):** Filtra cientos de contenedores estructurales repetitivos (`Padding`, `SizedBox`, `DecoratedBox`, `Transform`), condensando el árbol en tokens semánticos de alto valor optimizados para la ventana de contexto del LLM (<2ms de latencia).
+- ⚡ **Gestos y Control Nativo:** Taps, ingreso de texto, desplazamiento (scroll), alineación en pantalla (`scroll_into_view`), esperas asíncronas sincronizadas, capturas de pantalla y Hot Reload / Hot Restart en vivo.
+- 🧪 **Pruebas E2E Full-Stack Reales:** Permite a los agentes validar flujos completos cruzando la UI nativa, APIs backend y bases de datos locales (PostgreSQL, SQLite).
+
+---
+
+## 🛠️ Catálogo de Herramientas MCP (13 Herramientas)
+
+`flutter-mcp` expone 13 herramientas a través del Model Context Protocol:
+
+| Herramienta | Parámetros | Descripción |
+| :--- | :--- | :--- |
+| `flutter_connect` | `uri: String` | Conecta con el WebSocket del Dart VM Service de la app Flutter activa. |
+| `flutter_disconnect` | *(ninguno)* | Cierra limpiamente la sesión activa del Dart VM Service. |
+| `flutter_snapshot` | *(ninguno)* | Obtiene el árbol podado de UI en formato JSON semántico para LLMs. |
+| `flutter_tap` | `by: String`, `value: String` | Realiza un tap nativo buscando por `key`, `text`, `tooltip`, `type` o `semantics`. |
+| `flutter_enter_text` | `by: String`, `value: String`, `text: String` | Escribe texto en campos interactivos (`TextField`, `TextFormField`). |
+| `flutter_get_text` | `by: String`, `value: String` | Extrae el texto legible de cualquier widget de la pantalla. |
+| `flutter_scroll` | `by`, `value`, `dx`, `dy`, `duration_ms`, `frequency` | Realiza scroll programático sobre contenedores (`ListView`, `CustomScrollView`). |
+| `flutter_scroll_into_view` | `by`, `value`, `alignment` | Desplaza un contenedor hasta que el widget objetivo sea visible en pantalla. |
+| `flutter_wait_for` | `by`, `value`, `timeout_ms` | Espera asíncrona a que un widget aparezca en el árbol antes de continuar. |
+| `flutter_wait_for_absent` | `by`, `value`, `timeout_ms` | Espera asíncrona a que un widget desaparezca (spinners de carga, modales). |
+| `flutter_screenshot` | `save_path: Option<String>` | Captura de pantalla nativa (PNG) con soporte de guardado en disco. |
+| `flutter_hot_reload` | *(ninguno)* | Recarga en caliente instantánea sin perder el estado de la aplicación. |
+| `flutter_hot_restart` | *(ninguno)* | Reinicio completo y reensamblado del árbol de widgets en la app Flutter. |
+
+---
+
+## 📦 Instalación y Configuración
+
+### Opción 1: Binarios Precompilados (Recomendado)
+Descarga la última versión para tu sistema operativo desde [GitHub Releases](https://github.com/guty3rrez/flutter-mcp/releases):
+- Linux (x86_64)
+- macOS (Apple Silicon `aarch64` e Intel `x86_64`)
+- Windows (x86_64)
+
+Extrae y mueve el ejecutable a una ruta en tu PATH (ej. `~/.local/bin/flutter-mcp`).
+
+### Opción 2: Instalación vía Cargo
+```bash
+cargo install --git https://github.com/guty3rrez/flutter-mcp
+```
+
+### Opción 3: Compilar desde el Código Fuente
+```bash
+git clone https://github.com/guty3rrez/flutter-mcp.git
+cd flutter-mcp
+cargo build --release
+cp target/release/flutter-mcp ~/.local/bin/
+```
+
+---
+
+## ⚙️ Configuración
+
+### 1. Activar la Extensión Flutter Driver en tu App
+En tu proyecto Flutter, asegúrate de habilitar `enableFlutterDriverExtension()` en modo de pruebas o desarrollo:
+
+```dart
+// lib/main_driver.dart
+import 'package:flutter_driver/driver_extension.dart';
+import 'package:mi_app/main.dart' as app;
+
+void main() {
+  enableFlutterDriverExtension();
+  app.main();
+}
+```
+
+Inicia tu aplicación:
+```bash
+flutter run -d linux -t lib/main_driver.dart
+# Toma nota de la URI del Dart VM Service que imprime la consola:
+# A Dart VM Service on Linux is available at: ws://127.0.0.1:45678/ws
+```
+
+### 2. Configurar Clientes MCP
+
+#### Claude Desktop (`claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "flutter_mcp": {
+      "command": "flutter-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+#### Antigravity CLI / Gemini (`~/.gemini/config/mcp_config.json`)
+```json
+{
+  "mcpServers": {
+    "flutter_mcp": {
+      "command": "/home/<tu-usuario>/.local/bin/flutter-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+---
+
+## 🏗️ Arquitectura
+
+`flutter-mcp` está diseñado mediante **Arquitectura Hexagonal (Puertos y Adaptadores)** para aislar la lógica de dominio de los protocolos de transporte y detalles del SDK:
+
+```mermaid
+graph LR
+    subgraph Client [Clientes MCP]
+        Claude[Claude Desktop / Antigravity / Cursor]
+    end
+
+    subgraph InboundAdapter [Adaptador Primario / Inbound]
+        MCPServer["FlutterMcpServer (rmcp stdio)"]
+    end
+
+    subgraph Core [Núcleo de Dominio y Aplicación]
+        AppPort["FlutterAppService (Puerto Inbound)"]
+        UseCase["FlutterServiceImpl (Casos de Uso)"]
+        Domain["TreePruner | Finder | Gesture"]
+        VMPort["FlutterVmPort (SPI Outbound)"]
+    end
+
+    subgraph OutboundAdapter [Adaptador Secundario / Outbound]
+        WSAdapter["WebSocketVmServiceAdapter (tokio-tungstenite)"]
+        MockAdapter["MockVmServiceAdapter (Pruebas)"]
+    end
+
+    subgraph Target [Motor Flutter]
+        VM["Dart VM Service (ext.flutter.*)"]
+    end
+
+    Client -->|JSON-RPC 2.0 stdio| MCPServer
+    MCPServer --> AppPort
+    AppPort --> UseCase
+    UseCase --> Domain
+    UseCase --> VMPort
+    VMPort --> WSAdapter
+    VMPort -.-> MockAdapter
+    WSAdapter -->|JSON-RPC 2.0 WebSockets| VM
+```
+
+---
+
+## 🤝 Contribuciones y Control de Calidad
+
+¡Las contribuciones de la comunidad son bienvenidas! Revisa nuestra [Guía de Contribución](CONTRIBUTING.es.md) y el [Código de Conduct](CODE_OF_CONDUCT.md).
+
+### Reglas para Pull Requests:
+1. **Nunca hacer push directo a `main`**: Crea siempre una rama desde `main` (`feature/mi-funcionalidad` o `fix/descripcion-error`).
+2. **Control de Calidad Obligatorio**: Todo Pull Request debe pasar sin excepciones la suite de CI de GitHub Actions:
+   - `cargo fmt --check`
+   - `cargo clippy --all-targets -- -D warnings`
+   - `cargo test --all-targets` (Pruebas unitarias, de integración y BDD Gherkin)
+   - `cargo audit`
+
+Ejecuta la suite completa de verificación localmente antes de abrir tu PR:
+```bash
+./scripts/verify_harness.sh
+```
+
+---
+
+## 📄 Licencia
+
+Este proyecto está licenciado bajo la **GNU Affero General Public License v3.0 (AGPLv3)**.  
+Consulta el archivo [LICENSE](LICENSE) para más detalles.

@@ -27,5 +27,5 @@ Thumbs.db
 
 
 # Added by cargo
-
 /target
+*.log

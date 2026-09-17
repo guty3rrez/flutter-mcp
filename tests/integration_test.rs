@@ -1,4 +1,4 @@
-use flutter_native_mcp::{Finder, FlutterAppService, FlutterServiceImpl, MockVmServiceAdapter};
+use flutter_mcp::{Finder, FlutterAppService, FlutterServiceImpl, MockVmServiceAdapter};
 use std::sync::Arc;
 
 #[tokio::test]

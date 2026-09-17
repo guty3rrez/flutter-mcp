@@ -2,7 +2,7 @@ use rmcp::ServiceExt;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use flutter_native_mcp::{
+use flutter_mcp::{
     FlutterMcpServer, FlutterServiceImpl, FlutterVmPort, MockVmServiceAdapter,
     WebSocketVmServiceAdapter,
 };
@@ -13,12 +13,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "flutter_native_mcp=info".into()),
+                .unwrap_or_else(|_| "flutter_mcp=info".into()),
         )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
-    tracing::info!("Iniciando Flutter Native MCP Server...");
+    tracing::info!("Iniciando Flutter MCP Server...");
 
     // Soporte para modo simulación (flag --mock) o conexión real a WebSocket
     let args: Vec<String> = std::env::args().collect();

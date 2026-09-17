@@ -1,0 +1,41 @@
+name: CI Quality Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality-gate:
+    name: Lint, Test & Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: 1. Verify Code Formatting (cargo fmt)
+        run: cargo fmt --check
+
+      - name: 2. Strict Static Analysis (cargo clippy)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: 3. Run Test Suite (Unit, Integration, BDD)
+        run: cargo test --all-targets --verbose
+
+      - name: 4. Security Audit (cargo audit)
+        run: |
+          cargo install cargo-audit --locked || true
+          cargo audit

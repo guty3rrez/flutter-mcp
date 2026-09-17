@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "=========================================================="
-echo "   Flutter Native MCP - Test & Quality Harness Runner     "
+echo "         Flutter MCP - Test & Quality Harness Runner      "
 echo "=========================================================="
 
 echo -e "\n[1/5] Verificando formato de código (cargo fmt)..."
@@ -27,7 +27,7 @@ fi
 echo -e "\n[5/5] Verificando soporte de Mutation Testing (cargo-mutants)..."
 if command -v cargo-mutants &> /dev/null; then
     echo "Ejecutando mutaciones de prueba sobre el dominio..."
-    cargo mutants --package flutter-native-mcp --file src/domain/
+    cargo mutants --package flutter-mcp --file src/domain/
 else
     echo "ℹ️ cargo-mutants no está instalado globalmente. Para ejecutar mutation testing:"
     echo "   cargo install cargo-mutants && cargo mutants"

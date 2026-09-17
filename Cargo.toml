@@ -1,17 +1,23 @@
 [package]
-name = "flutter-native-mcp"
-version = "0.1.0"
+name = "flutter-mcp"
+version = "0.2.0"
 edition = "2024"
 authors = ["Felipe Gutiérrez <felipelguty@gmail.com>"]
-description = "Model Context Protocol (MCP) server for native Flutter UI automation and inspection"
-license = "MIT OR Apache-2.0"
+description = "Model Context Protocol (MCP) server for native Flutter UI automation, introspection, and E2E testing in Rust"
+license = "AGPL-3.0-only"
+repository = "https://github.com/guty3rrez/flutter-mcp"
+homepage = "https://github.com/guty3rrez/flutter-mcp"
+documentation = "https://github.com/guty3rrez/flutter-mcp#readme"
+keywords = ["mcp", "flutter", "testing", "automation", "ai"]
+categories = ["development-tools::testing", "command-line-utilities"]
+readme = "README.md"
 
 [lib]
-name = "flutter_native_mcp"
+name = "flutter_mcp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "flutter-native-mcp"
+name = "flutter-mcp"
 path = "src/main.rs"
 
 [dependencies]
