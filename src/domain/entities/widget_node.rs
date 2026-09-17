@@ -72,6 +72,11 @@ impl WidgetNode {
         self
     }
 
+    pub fn with_semantics_label(mut self, label: impl Into<String>) -> Self {
+        self.semantics_label = Some(label.into());
+        self
+    }
+
     pub fn with_bounds(mut self, bounds: RectBounds) -> Self {
         self.bounds = Some(bounds);
         self

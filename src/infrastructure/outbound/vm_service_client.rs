@@ -178,34 +178,10 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
     async fn dispatch_gesture(&self, gesture: &Gesture) -> Result<()> {
         match gesture {
             Gesture::Tap { finder } => {
-                let mut params = json!({
-                    "timeout": "5000"
-                });
-                match finder {
-                    Finder::Key(key_val) => {
-                        params["finderType"] = json!("ByValueKey");
-                        params["keyValueString"] = json!(key_val);
-                        params["keyValueType"] = json!("String");
-                    }
-                    Finder::Text { text, .. } => {
-                        params["finderType"] = json!("ByText");
-                        params["text"] = json!(text);
-                    }
-                    Finder::Tooltip(tip) => {
-                        params["finderType"] = json!("ByTooltipMessage");
-                        params["text"] = json!(tip);
-                    }
-                    Finder::Type(t) => {
-                        params["finderType"] = json!("ByType");
-                        params["type"] = json!(t);
-                    }
-                    Finder::Coordinates { x, y } => {
-                        params["finderType"] = json!("ByOffset");
-                        params["dx"] = json!(x);
-                        params["dy"] = json!(y);
-                    }
-                }
-                self.execute_driver_command("tap", params).await?;
+                let mut map = finder.to_driver_params();
+                map.insert("timeout".into(), json!("5000"));
+                self.execute_driver_command("tap", Value::Object(map))
+                    .await?;
                 Ok(())
             }
             Gesture::EnterText { text, .. } => {
@@ -225,26 +201,100 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                 Ok(())
             }
             Gesture::Scroll {
+                finder,
                 dx,
                 dy,
                 duration_ms,
-                ..
+                frequency,
             } => {
-                let params = json!({
-                    "dx": dx,
-                    "dy": dy,
-                    "duration": (duration_ms * 1000).to_string(),
-                    "frequency": "60",
-                    "timeout": "5000"
-                });
-                self.execute_driver_command("scroll", params).await?;
+                let mut map = finder.to_driver_params();
+                map.insert("dx".into(), json!(dx.to_string()));
+                map.insert("dy".into(), json!(dy.to_string()));
+                map.insert("duration".into(), json!((duration_ms * 1000).to_string()));
+                map.insert("frequency".into(), json!(frequency.to_string()));
+                map.insert("timeout".into(), json!("5000"));
+                self.execute_driver_command("scroll", Value::Object(map))
+                    .await?;
                 Ok(())
             }
-            Gesture::ScrollUntilVisible { .. } => {
-                // Implementación de scroll iterativo
+            Gesture::ScrollIntoView { finder, alignment } => {
+                let mut map = finder.to_driver_params();
+                map.insert("alignment".into(), json!(alignment.to_string()));
+                map.insert("timeout".into(), json!("5000"));
+                self.execute_driver_command("scrollIntoView", Value::Object(map))
+                    .await?;
+                Ok(())
+            }
+            Gesture::ScrollUntilVisible {
+                scrollable,
+                target,
+                delta,
+                max_scrolls,
+            } => {
+                let scroll_finder = scrollable
+                    .clone()
+                    .unwrap_or_else(|| Finder::by_type("Scrollable"));
+                for _ in 0..*max_scrolls {
+                    let mut check_map = target.to_driver_params();
+                    check_map.insert("timeout".into(), json!("500000")); // 500ms
+                    if self
+                        .execute_driver_command("waitFor", Value::Object(check_map))
+                        .await
+                        .is_ok()
+                    {
+                        return Ok(());
+                    }
+                    let mut scroll_map = scroll_finder.to_driver_params();
+                    scroll_map.insert("dx".into(), json!("0"));
+                    scroll_map.insert("dy".into(), json!(delta.to_string()));
+                    scroll_map.insert("duration".into(), json!("300000"));
+                    scroll_map.insert("frequency".into(), json!("60"));
+                    scroll_map.insert("timeout".into(), json!("5000"));
+                    let _ = self
+                        .execute_driver_command("scroll", Value::Object(scroll_map))
+                        .await;
+                }
                 Ok(())
             }
         }
+    }
+
+    async fn get_text(&self, finder: &Finder) -> Result<String> {
+        let mut map = finder.to_driver_params();
+        map.insert("timeout".into(), json!("5000"));
+        let result = self
+            .execute_driver_command("get_text", Value::Object(map))
+            .await?;
+
+        let text_opt = result
+            .get("response")
+            .and_then(|r| r.get("text"))
+            .or_else(|| result.get("text"))
+            .and_then(|t| t.as_str());
+
+        if let Some(text) = text_opt {
+            Ok(text.to_string())
+        } else {
+            Err(ApplicationError::DriverError(format!(
+                "No se pudo extraer texto del widget. Respuesta: {result:?}"
+            )))
+        }
+    }
+
+    async fn wait_for(&self, finder: &Finder, timeout_ms: u64) -> Result<()> {
+        let mut map = finder.to_driver_params();
+        map.insert("timeout".into(), json!((timeout_ms * 1000).to_string()));
+        self.execute_driver_command("waitFor", Value::Object(map))
+            .await?;
+        Ok(())
+    }
+
+    async fn wait_for_absent(&self, finder: &Finder, timeout_ms: u64) -> Result<()> {
+        let mut map = finder.to_driver_params();
+        map.insert("timeout".into(), json!((timeout_ms * 1000).to_string()));
+        self.execute_driver_command("waitForAbsent", Value::Object(map))
+            .await?;
+        Ok(())
     }
 
     async fn trigger_hot_reload(&self) -> Result<()> {
@@ -260,6 +310,21 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
     }
 
     async fn trigger_hot_restart(&self) -> Result<()> {
+        let isolate_id = self
+            .main_isolate_id
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_else(|| "isolates/main".into());
+
+        if self
+            .send_rpc("ext.flutter.reassemble", json!({ "isolateId": isolate_id }))
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+
         self.send_rpc("hotRestart", json!({})).await?;
         Ok(())
     }
@@ -268,19 +333,27 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
         let result = self
             .execute_driver_command("screenshot", json!({ "timeout": "5000" }))
             .await?;
-        
+
         let b64_opt = result
             .get("response")
             .and_then(|r| r.get("data"))
-            .or_else(|| result.get("data").and_then(|d| if d.is_object() { d.get("data") } else { Some(d) }))
+            .or_else(|| {
+                result.get("data").and_then(|d| {
+                    if d.is_object() {
+                        d.get("data")
+                    } else {
+                        Some(d)
+                    }
+                })
+            })
             .or_else(|| result.get("screenshot"))
             .and_then(|s| s.as_str());
 
         if let Some(screenshot_b64) = b64_opt {
             use base64::prelude::*;
-            BASE64_STANDARD
-                .decode(screenshot_b64.trim())
-                .map_err(|e| ApplicationError::DriverError(format!("Error decodificando screenshot Base64: {e}")))
+            BASE64_STANDARD.decode(screenshot_b64.trim()).map_err(|e| {
+                ApplicationError::DriverError(format!("Error decodificando screenshot Base64: {e}"))
+            })
         } else {
             Err(ApplicationError::DriverError(format!(
                 "No se recibió captura en respuesta. Respuesta: {result:?}"

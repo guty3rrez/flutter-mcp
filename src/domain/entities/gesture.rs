@@ -20,6 +20,11 @@ pub enum Gesture {
         dx: f64,
         dy: f64,
         duration_ms: u64,
+        frequency: u32,
+    },
+    ScrollIntoView {
+        finder: Finder,
+        alignment: f64,
     },
     ScrollUntilVisible {
         scrollable: Option<Finder>,

@@ -1,5 +1,5 @@
 use crate::application::error::Result;
-use crate::domain::entities::Gesture;
+use crate::domain::entities::{Finder, Gesture};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -23,6 +23,15 @@ pub trait FlutterVmPort: Send + Sync {
 
     /// Ejecuta un gesto o interacción en el runtime
     async fn dispatch_gesture(&self, gesture: &Gesture) -> Result<()>;
+
+    /// Obtiene el texto extraído de un widget
+    async fn get_text(&self, finder: &Finder) -> Result<String>;
+
+    /// Espera a que un widget aparezca en el árbol
+    async fn wait_for(&self, finder: &Finder, timeout_ms: u64) -> Result<()>;
+
+    /// Espera a que un widget desaparezca del árbol
+    async fn wait_for_absent(&self, finder: &Finder, timeout_ms: u64) -> Result<()>;
 
     /// Dispara Hot Reload en el Isolate principal
     async fn trigger_hot_reload(&self) -> Result<()>;

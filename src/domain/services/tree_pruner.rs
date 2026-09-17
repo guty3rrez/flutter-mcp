@@ -83,10 +83,40 @@ impl TreePruner {
         });
 
         // Extraer Texto
-        let text = properties.and_then(|props| {
+        let text = properties
+            .and_then(|props| {
+                props.iter().find_map(|prop| {
+                    let name = prop.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    if name == "data" || name == "text" || name == "title" {
+                        prop.get("description")
+                            .and_then(|d| d.as_str())
+                            .map(ToString::to_string)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .or_else(|| {
+                if widget_type == "Text" {
+                    json.get("description")
+                        .and_then(|d| d.as_str())
+                        .and_then(|desc| {
+                            if desc.starts_with("Text(\"") && desc.ends_with("\")") {
+                                Some(desc[6..desc.len() - 2].to_string())
+                            } else {
+                                None
+                            }
+                        })
+                } else {
+                    None
+                }
+            });
+
+        // Extraer Tooltip
+        let tooltip = properties.and_then(|props| {
             props.iter().find_map(|prop| {
                 let name = prop.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                if name == "data" || name == "text" {
+                if name == "tooltip" || name == "message" {
                     prop.get("description")
                         .and_then(|d| d.as_str())
                         .map(ToString::to_string)
@@ -96,11 +126,11 @@ impl TreePruner {
             })
         });
 
-        // Extraer Tooltip / Semantics
-        let tooltip = properties.and_then(|props| {
+        // Extraer Semantics
+        let semantics_label = properties.and_then(|props| {
             props.iter().find_map(|prop| {
                 let name = prop.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                if name == "tooltip" || name == "message" {
+                if name == "semanticsLabel" || name == "label" {
                     prop.get("description")
                         .and_then(|d| d.as_str())
                         .map(ToString::to_string)
@@ -147,6 +177,9 @@ impl TreePruner {
         }
         if let Some(tp) = tooltip {
             node = node.with_tooltip(tp);
+        }
+        if let Some(sl) = semantics_label {
+            node = node.with_semantics_label(sl);
         }
         node.children = pruned_children;
 

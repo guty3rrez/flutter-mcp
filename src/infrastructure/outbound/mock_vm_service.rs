@@ -1,6 +1,6 @@
 use crate::application::error::{ApplicationError, Result};
 use crate::application::ports::outbound::FlutterVmPort;
-use crate::domain::entities::Gesture;
+use crate::domain::entities::{Finder, Gesture};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -106,6 +106,31 @@ impl FlutterVmPort for MockVmServiceAdapter {
             return Err(ApplicationError::NotConnected);
         }
         self.dispatched_gestures.lock().await.push(gesture.clone());
+        Ok(())
+    }
+
+    async fn get_text(&self, finder: &Finder) -> Result<String> {
+        if !self.is_connected().await {
+            return Err(ApplicationError::NotConnected);
+        }
+        match finder {
+            Finder::Text { text, .. } => Ok(text.clone()),
+            Finder::Key(k) => Ok(format!("Text for {k}")),
+            _ => Ok("Mock Widget Text".into()),
+        }
+    }
+
+    async fn wait_for(&self, _finder: &Finder, _timeout_ms: u64) -> Result<()> {
+        if !self.is_connected().await {
+            return Err(ApplicationError::NotConnected);
+        }
+        Ok(())
+    }
+
+    async fn wait_for_absent(&self, _finder: &Finder, _timeout_ms: u64) -> Result<()> {
+        if !self.is_connected().await {
+            return Err(ApplicationError::NotConnected);
+        }
         Ok(())
     }
 

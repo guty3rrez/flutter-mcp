@@ -1,16 +1,13 @@
-use std::sync::Arc;
 use flutter_native_mcp::{
-    FlutterAppService,
-    FlutterServiceImpl,
-    FlutterVmPort,
-    WebSocketVmServiceAdapter,
+    FlutterAppService, FlutterServiceImpl, FlutterVmPort, WebSocketVmServiceAdapter,
 };
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let vm_uri = std::env::args().nth(1).unwrap_or_else(|| {
-        "ws://127.0.0.1:33001/4LSO1e6XxM0=/ws".to_string()
-    });
+    let vm_uri = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "ws://127.0.0.1:33001/4LSO1e6XxM0=/ws".to_string());
 
     println!("===========================================================");
     println!("  Conectando a Auralis Music Player vía WebSocket Dart VM  ");
@@ -28,16 +25,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Extraer árbol y podar
     println!("\n2. Obteniendo árbol de widgets activo (Snapshot)...");
     let raw_tree = adapter.get_diagnostics_tree(50).await?;
-    println!("DEBUG RAW JSON KEYS: {:?}", raw_tree.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+    println!(
+        "DEBUG RAW JSON KEYS: {:?}",
+        raw_tree.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
     if let Some(desc) = raw_tree.get("description") {
         println!("Root description: {:?}", desc);
     }
     if let Some(result) = raw_tree.get("result") {
-        println!("Result keys: {:?}", result.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+        println!(
+            "Result keys: {:?}",
+            result.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
     }
 
     let snapshot = service.get_pruned_snapshot().await?;
-    
+
     println!("✅ Árbol podado obtenido con éxito.");
     println!("\n🔍 Buscando elementos interactivos y con Key en Auralis:");
 
@@ -61,12 +64,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Probar Interacción Nativa (Tap y EnterText en el buscador)
     println!("\n3. Probando interacción nativa sobre TextField de Auralis...");
-    match service.tap(flutter_native_mcp::Finder::by_type("TextField")).await {
+    match service
+        .tap(flutter_native_mcp::Finder::by_type("TextField"))
+        .await
+    {
         Ok(_) => println!("✅ ¡TAP EN TEXTFIELD EXITOSO!"),
         Err(e) => println!("⚠️ Error en tap: {e}"),
     }
 
-    match service.enter_text(flutter_native_mcp::Finder::by_type("TextField"), "Daft Punk - Discovery".to_string()).await {
+    match service
+        .enter_text(
+            flutter_native_mcp::Finder::by_type("TextField"),
+            "Daft Punk - Discovery".to_string(),
+        )
+        .await
+    {
         Ok(_) => println!("✅ ¡TEXTO 'Daft Punk - Discovery' INGRESADO EN TEXTFIELD DE AURALIS!"),
         Err(e) => println!("⚠️ Error ingresando texto: {e}"),
     }
@@ -75,25 +87,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n4. Capturando pantalla de la interfaz...");
     match service.take_screenshot().await {
         Ok(bytes) => {
-            let path = "/home/guty_3rrez/Proyectos/flutter-native-mcp/auralis_native_screenshot.png";
+            let path =
+                "/home/guty_3rrez/Proyectos/flutter-native-mcp/auralis_native_screenshot.png";
             tokio::fs::write(path, &bytes).await?;
-            println!("✅ ¡SCREENSHOT NATIVO GUARDADO EN: {path} ({} bytes)!", bytes.len());
+            println!(
+                "✅ ¡SCREENSHOT NATIVO GUARDADO EN: {path} ({} bytes)!",
+                bytes.len()
+            );
         }
         Err(e) => println!("⚠️ Error capturando screenshot: {e}"),
     }
 
     // 5. Probar navegación haciendo tap en "Settings"
     println!("\n5. Navegando: haciendo tap nativo en 'Settings'...");
-    match service.tap(flutter_native_mcp::Finder::by_text("Settings", true)).await {
+    match service
+        .tap(flutter_native_mcp::Finder::by_text("Settings", true))
+        .await
+    {
         Ok(_) => {
             println!("✅ ¡TAP EN 'Settings' EXITOSO!");
             tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
 
-            let path_settings = "/home/guty_3rrez/Proyectos/flutter-native-mcp/auralis_settings_screenshot.png";
+            let path_settings =
+                "/home/guty_3rrez/Proyectos/flutter-native-mcp/auralis_settings_screenshot.png";
             match service.take_screenshot().await {
                 Ok(bytes) => {
                     tokio::fs::write(path_settings, &bytes).await?;
-                    println!("✅ ¡CAPTURA DE PANTALLA TRAS TAP EN SETTINGS GUARDADA EN: {path_settings}!");
+                    println!(
+                        "✅ ¡CAPTURA DE PANTALLA TRAS TAP EN SETTINGS GUARDADA EN: {path_settings}!"
+                    );
                 }
                 Err(e) => println!("⚠️ Error capturando screenshot de settings: {e}"),
             }
