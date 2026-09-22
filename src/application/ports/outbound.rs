@@ -27,10 +27,12 @@ pub trait FlutterVmPort: Send + Sync {
     /// Obtiene el texto extraído de un widget
     async fn get_text(&self, finder: &Finder) -> Result<String>;
 
-    /// Espera a que un widget aparezca en el árbol
+    /// Espera a que un widget aparezca en el árbol. `timeout_ms` viaja tal cual (en
+    /// milisegundos, sin reescalar) como el campo `timeout` del protocolo Flutter Driver.
     async fn wait_for(&self, finder: &Finder, timeout_ms: u64) -> Result<()>;
 
-    /// Espera a que un widget desaparezca del árbol
+    /// Espera a que un widget desaparezca del árbol. `timeout_ms` viaja tal cual (en
+    /// milisegundos, sin reescalar) como el campo `timeout` del protocolo Flutter Driver.
     async fn wait_for_absent(&self, finder: &Finder, timeout_ms: u64) -> Result<()>;
 
     /// Dispara Hot Reload en el Isolate principal
