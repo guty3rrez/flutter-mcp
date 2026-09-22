@@ -25,9 +25,9 @@ Flutter bypasses standard operating system DOM hierarchies and renders UI widget
 
 ---
 
-## 🛠️ MCP Tools Reference (17 Tools)
+## 🛠️ MCP Tools Reference (18 Tools)
 
-`flutter-mcp` exposes 17 tools via the Model Context Protocol:
+`flutter-mcp` exposes 18 tools via the Model Context Protocol:
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
@@ -48,6 +48,7 @@ Flutter bypasses standard operating system DOM hierarchies and renders UI widget
 | `flutter_get_logs` | `filter`, `source`, `limit` | Read stdout/stderr/`dart:developer.log` output buffered since connecting. Defaults to the last 100 lines. |
 | `flutter_get_errors` | `limit`, `precise` | Read framework errors (red screens) the app printed to stdout/stderr. **Validated limitation:** does not catch generic uncaught Dart/async exceptions — the engine reports those directly to native stderr, bypassing the `dart:io` sink this tool observes; `precise: true` (exception-pause mode) did not catch that case either in real-device testing. |
 | `flutter_get_performance` | `window_ms`, `include_frames` | Get a jank/build/raster report derived from the accumulated `Timeline` stream. |
+| `flutter_driver_raw` | `command: String`, `params: object` | Passthrough to an arbitrary `ext.flutter.driver` command by name, for SDK commands or custom driver extensions not covered by a dedicated tool. |
 
 ---
 

@@ -25,9 +25,9 @@ Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dib
 
 ---
 
-## 🛠️ Catálogo de Herramientas MCP (17 Herramientas)
+## 🛠️ Catálogo de Herramientas MCP (18 Herramientas)
 
-`flutter-mcp` expone 17 herramientas a través del Model Context Protocol:
+`flutter-mcp` expone 18 herramientas a través del Model Context Protocol:
 
 | Herramienta | Parámetros | Descripción |
 | :--- | :--- | :--- |
@@ -48,6 +48,7 @@ Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dib
 | `flutter_get_logs` | `filter`, `source`, `limit` | Lee stdout/stderr/`dart:developer.log` acumulados desde la conexión. Por defecto, las últimas 100 líneas. |
 | `flutter_get_errors` | `limit`, `precise` | Lee errores de framework (red screens) que la app imprimió por stdout/stderr. **Limitación validada:** no detecta excepciones Dart/async genéricas no capturadas — el engine las reporta directo a stderr nativo, sin pasar por el sink `dart:io` que esta tool observa; `precise: true` (modo pausa en excepción) tampoco las capturó en pruebas contra un dispositivo real. |
 | `flutter_get_performance` | `window_ms`, `include_frames` | Obtiene un reporte de jank/build/raster derivado del stream `Timeline` acumulado. |
+| `flutter_driver_raw` | `command: String`, `params: object` | Passthrough a un comando arbitrario de `ext.flutter.driver` por nombre, para comandos del SDK o extensiones de driver personalizadas no cubiertas por una tool dedicada. |
 
 ---
 

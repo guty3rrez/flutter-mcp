@@ -52,4 +52,15 @@ pub trait FlutterAppService: Send + Sync {
         entrypoint: String,
         revert_after_restart: bool,
     ) -> Result<StartControlOutcome>;
+
+    /// Passthrough directo a `FlutterVmPort::execute_driver_command`, para comandos de Flutter
+    /// Driver sin una tool dedicada (comandos nuevos del SDK, `set_frame_sync`/
+    /// `set_text_entry_emulation` manuales, o una `FlutterDriverExtension` personalizada de la
+    /// app). Se beneficia automáticamente del chequeo de `isError` y de la configuración lazy de
+    /// frame-sync/text-entry-emulation, ya que ambas viven en `execute_driver_command`.
+    async fn driver_raw(
+        &self,
+        command: String,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value>;
 }

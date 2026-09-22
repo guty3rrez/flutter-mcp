@@ -202,6 +202,23 @@ pub struct GetPerformanceParams {
     pub include_frames: Option<bool>,
 }
 
+fn default_driver_raw_params() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DriverRawParams {
+    #[schemars(
+        description = "Nombre del comando de Flutter Driver a ejecutar tal cual (ej. 'set_frame_sync', 'set_text_entry_emulation', 'send_text_input_action', o un comando de una FlutterDriverExtension personalizada de la app)"
+    )]
+    pub command: String,
+    #[schemars(
+        description = "Parámetros del comando como objeto JSON. No incluir 'command' ni 'isolateId': el servidor los agrega automáticamente. Los valores deben ir como string, como exige el protocolo Flutter Driver (ej. {\"enabled\": \"true\"})"
+    )]
+    #[serde(default = "default_driver_raw_params")]
+    pub params: serde_json::Value,
+}
+
 #[derive(Clone)]
 pub struct FlutterMcpServer {
     app_service: Arc<dyn FlutterAppService>,
@@ -689,6 +706,30 @@ impl FlutterMcpServer {
             }
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "Error obteniendo reporte de rendimiento: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Ejecutar un comando arbitrario de la extensión ext.flutter.driver por su nombre (passthrough directo, sin necesitar una tool dedicada). Útil para comandos del SDK no cubiertos todavía por otra tool ('set_frame_sync', 'set_text_entry_emulation', 'send_text_input_action', etc.) o una extensión de Flutter Driver personalizada de la app. El servidor agrega automáticamente 'command'/'isolateId' y aplica la misma configuración lazy de frame-sync/text-entry-emulation y validación de isError que el resto de las tools de gestos."
+    )]
+    async fn flutter_driver_raw(
+        &self,
+        Parameters(params): Parameters<DriverRawParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let command = params.command.clone();
+        match self
+            .app_service
+            .driver_raw(params.command, params.params)
+            .await
+        {
+            Ok(result) => {
+                let json_repr = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| "Error al serializar respuesta".into());
+                Ok(CallToolResult::success(vec![ContentBlock::text(json_repr)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error ejecutando comando '{command}' de Flutter Driver: {e}"
             ))])),
         }
     }

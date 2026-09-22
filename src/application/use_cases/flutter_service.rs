@@ -216,6 +216,14 @@ impl FlutterAppService for FlutterServiceImpl {
             reverted,
         })
     }
+
+    async fn driver_raw(
+        &self,
+        command: String,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.vm_port.execute_driver_command(&command, params).await
+    }
 }
 
 #[cfg(test)]
@@ -675,5 +683,44 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(ApplicationError::MainNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_driver_raw_delegates_to_execute_driver_command() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm
+            .expect_execute_driver_command()
+            .withf(|command, params| {
+                command == "get_semantics_id"
+                    && params == &json!({"finderType":"ByType","type":"Text"})
+            })
+            .times(1)
+            .returning(|_, _| Ok(json!({"isError": false, "response": {"id": 42}})));
+
+        let service =
+            FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(MockProjectFilesPort::new()));
+        let result = service
+            .driver_raw(
+                "get_semantics_id".into(),
+                json!({"finderType":"ByType","type":"Text"}),
+            )
+            .await
+            .expect("debe delegar exitosamente");
+
+        assert_eq!(result["response"]["id"], 42);
+    }
+
+    #[tokio::test]
+    async fn test_driver_raw_propagates_port_error() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm
+            .expect_execute_driver_command()
+            .times(1)
+            .returning(|_, _| Err(ApplicationError::DriverError("boom".into())));
+
+        let service =
+            FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(MockProjectFilesPort::new()));
+        let result = service.driver_raw("x".into(), json!({})).await;
+        assert!(matches!(result, Err(ApplicationError::DriverError(_))));
     }
 }
