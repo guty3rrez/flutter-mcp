@@ -9,8 +9,14 @@ pub trait FlutterAppService: Send + Sync {
     async fn connect(&self, uri: &str) -> Result<()>;
     async fn disconnect(&self) -> Result<()>;
     async fn get_pruned_snapshot(&self) -> Result<WidgetNode>;
-    async fn tap(&self, finder: Finder) -> Result<()>;
-    async fn enter_text(&self, finder: Finder, text: String) -> Result<()>;
+
+    /// `timeout_ms`: `None` deja que el adaptador decida el timeout vía su heurística de
+    /// pre-chequeo (fast-fail si el finder no matchea nada en el árbol actual, default si
+    /// matchea o no aplica); `Some(t)` lo salta por completo y usa `t` (milisegundos, tal cual,
+    /// mismo formato que `wait_for`) como timeout del comando de Flutter Driver.
+    async fn tap(&self, finder: Finder, timeout_ms: Option<u64>) -> Result<()>;
+    async fn enter_text(&self, finder: Finder, text: String, timeout_ms: Option<u64>)
+    -> Result<()>;
     async fn get_text(&self, finder: Finder) -> Result<String>;
     async fn scroll(
         &self,
@@ -19,8 +25,14 @@ pub trait FlutterAppService: Send + Sync {
         dy: f64,
         duration_ms: u64,
         frequency: u32,
+        timeout_ms: Option<u64>,
     ) -> Result<()>;
-    async fn scroll_into_view(&self, finder: Finder, alignment: f64) -> Result<()>;
+    async fn scroll_into_view(
+        &self,
+        finder: Finder,
+        alignment: f64,
+        timeout_ms: Option<u64>,
+    ) -> Result<()>;
     async fn wait_for(&self, finder: Finder, timeout_ms: u64) -> Result<()>;
     async fn wait_for_absent(&self, finder: Finder, timeout_ms: u64) -> Result<()>;
     async fn hot_reload(&self) -> Result<()>;

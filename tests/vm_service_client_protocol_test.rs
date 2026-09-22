@@ -158,6 +158,7 @@ async fn enter_text_taps_the_finder_before_entering_text() {
         .dispatch_gesture(&Gesture::EnterText {
             finder: Finder::by_key("email_field"),
             text: "hi".into(),
+            timeout_ms: None,
         })
         .await
         .unwrap();
@@ -190,6 +191,7 @@ async fn clear_text_taps_the_finder_before_clearing_text() {
     adapter
         .dispatch_gesture(&Gesture::ClearText {
             finder: Finder::by_key("email_field"),
+            timeout_ms: None,
         })
         .await
         .unwrap();
@@ -296,6 +298,7 @@ async fn tap_uses_fast_fail_timeout_when_precheck_finds_no_match() {
     adapter
         .dispatch_gesture(&Gesture::Tap {
             finder: Finder::by_text("Texto Que No Existe", true),
+            timeout_ms: None,
         })
         .await
         .expect("el comando real igual se intenta, aunque el pre-chequeo no haya matcheado");
@@ -330,6 +333,7 @@ async fn tap_uses_default_timeout_when_precheck_finds_match() {
     adapter
         .dispatch_gesture(&Gesture::Tap {
             finder: Finder::by_text("Guardar", true),
+            timeout_ms: None,
         })
         .await
         .unwrap();
@@ -342,6 +346,188 @@ async fn tap_uses_default_timeout_when_precheck_finds_match() {
     assert_eq!(
         tap_call.get("timeout").and_then(|t| t.as_str()),
         Some("5000")
+    );
+}
+
+#[tokio::test]
+async fn tap_with_explicit_timeout_ms_skips_precheck_and_uses_given_value() {
+    let tree_calls: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tree_calls_clone = tree_calls.clone();
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(move |method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else if method == "ext.flutter.inspector.getRootWidgetTree"
+            || method == "ext.flutter.inspector.getRootWidgetSummaryTree"
+        {
+            // No debería llamarse nunca cuando hay override explícito -- registramos la
+            // invocación (sync, sin await) para poder aserir su ausencia más abajo.
+            tree_calls_clone.lock().unwrap().push(method.to_string());
+            tree_with_text("Cualquier cosa")
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::by_text("Cualquier cosa", true),
+            timeout_ms: Some(1234),
+        })
+        .await
+        .unwrap();
+
+    let logged = params.lock().await;
+    let tap_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("tap"))
+        .expect("debe haber invocado tap");
+    assert_eq!(
+        tap_call.get("timeout").and_then(|t| t.as_str()),
+        Some("1234")
+    );
+    assert!(
+        tree_calls.lock().unwrap().is_empty(),
+        "un timeout_ms explícito debe saltar el precheck por completo"
+    );
+}
+
+#[tokio::test]
+async fn tap_without_timeout_ms_still_runs_precheck() {
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else if method == "ext.flutter.inspector.getRootWidgetTree" {
+            tree_with_text("Guardar")
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::by_text("Guardar", true),
+            timeout_ms: None,
+        })
+        .await
+        .unwrap();
+
+    let logged = params.lock().await;
+    let tap_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("tap"))
+        .expect("debe haber invocado tap");
+    assert_eq!(
+        tap_call.get("timeout").and_then(|t| t.as_str()),
+        Some("5000"),
+        "sin override, el precheck sigue decidiendo el timeout (match -> default)"
+    );
+}
+
+#[tokio::test]
+async fn enter_text_with_explicit_timeout_ms_applies_to_the_tap_substep_only() {
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .dispatch_gesture(&Gesture::EnterText {
+            finder: Finder::by_text("Campo", true),
+            text: "hi".into(),
+            timeout_ms: Some(999),
+        })
+        .await
+        .unwrap();
+
+    let logged = params.lock().await;
+    let tap_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("tap"))
+        .expect("debe haber invocado tap");
+    assert_eq!(
+        tap_call.get("timeout").and_then(|t| t.as_str()),
+        Some("999")
+    );
+
+    let enter_text_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("enter_text"))
+        .expect("debe haber invocado enter_text");
+    assert_eq!(
+        enter_text_call.get("timeout").and_then(|t| t.as_str()),
+        Some("5000"),
+        "el override del tap de foco no debe filtrarse al literal hardcodeado de enter_text"
+    );
+}
+
+#[tokio::test]
+async fn tap_page_back_sends_page_back_finder_type_with_no_extra_params() {
+    let tree_calls: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tree_calls_clone = tree_calls.clone();
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(move |method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else if method == "ext.flutter.inspector.getRootWidgetTree"
+            || method == "ext.flutter.inspector.getRootWidgetSummaryTree"
+        {
+            tree_calls_clone.lock().unwrap().push(method.to_string());
+            tree_with_text("lo que sea")
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::PageBack,
+            timeout_ms: None,
+        })
+        .await
+        .unwrap();
+
+    let logged = params.lock().await;
+    let tap_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("tap"))
+        .expect("debe haber invocado tap");
+    assert_eq!(
+        tap_call.get("finderType").and_then(|t| t.as_str()),
+        Some("PageBack")
+    );
+    assert_eq!(
+        tap_call.get("timeout").and_then(|t| t.as_str()),
+        Some("5000")
+    );
+    for forbidden in ["text", "label", "type", "keyValueString"] {
+        assert!(
+            tap_call.get(forbidden).is_none(),
+            "PageBack no debe llevar el campo '{forbidden}'"
+        );
+    }
+    assert!(
+        tree_calls.lock().unwrap().is_empty(),
+        "PageBack no es un finder lento, no debería disparar precheck"
     );
 }
 
@@ -372,6 +558,7 @@ async fn tap_error_includes_candidate_suggestions_when_precheck_finds_similar_te
     let err = adapter
         .dispatch_gesture(&Gesture::Tap {
             finder: Finder::by_text("Guardar", true),
+            timeout_ms: None,
         })
         .await
         .expect_err("el tap real también falla en este escenario");

@@ -25,20 +25,21 @@ Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dib
 
 ---
 
-## 🛠️ Catálogo de Herramientas MCP (18 Herramientas)
+## 🛠️ Catálogo de Herramientas MCP (19 Herramientas)
 
-`flutter-mcp` expone 18 herramientas a través del Model Context Protocol:
+`flutter-mcp` expone 19 herramientas a través del Model Context Protocol:
 
 | Herramienta | Parámetros | Descripción |
 | :--- | :--- | :--- |
 | `flutter_connect` | `uri: String` | Conecta con el WebSocket del Dart VM Service de la app Flutter activa. |
 | `flutter_disconnect` | *(ninguno)* | Cierra limpiamente la sesión activa del Dart VM Service. |
 | `flutter_snapshot` | *(ninguno)* | Obtiene el árbol podado de UI en formato JSON semántico para LLMs. |
-| `flutter_tap` | `by: String`, `value: String` | Realiza un tap nativo buscando por `key`, `text`, `tooltip`, `type` o `semantics`. |
-| `flutter_enter_text` | `by: String`, `value: String`, `text: String` | Escribe texto en campos interactivos (`TextField`, `TextFormField`). |
+| `flutter_tap` | `by: String`, `value: String`, `timeout_ms: Option<u64>` | Realiza un tap nativo buscando por `key`, `text`, `tooltip`, `type` o `semantics`. `timeout_ms` permite override opcional de la heurística automática de pre-chequeo (fast-fail vs. default), enviado tal cual a Flutter Driver. |
+| `flutter_pop` | `timeout_ms: Option<u64>` | Ejecuta el gesto de retroceso estándar de Flutter Driver (`PageBack`: tooltip "Back" con fallback por tipo de widget, independiente del idioma). Preferible sobre `flutter_tap(by: "tooltip", value: "Back")`, que no tiene ese fallback. |
+| `flutter_enter_text` | `by: String`, `value: String`, `text: String`, `timeout_ms: Option<u64>` | Escribe texto en campos interactivos (`TextField`, `TextFormField`). `timeout_ms` override del tap de foco previo al ingreso de texto. |
 | `flutter_get_text` | `by: String`, `value: String` | Extrae el texto legible de cualquier widget de la pantalla. |
-| `flutter_scroll` | `by`, `value`, `dx`, `dy`, `duration_ms`, `frequency` | Realiza scroll programático sobre contenedores (`ListView`, `CustomScrollView`). |
-| `flutter_scroll_into_view` | `by`, `value`, `alignment` | Desplaza un contenedor hasta que el widget objetivo sea visible en pantalla. |
+| `flutter_scroll` | `by`, `value`, `dx`, `dy`, `duration_ms`, `frequency`, `timeout_ms: Option<u64>` | Realiza scroll programático sobre contenedores (`ListView`, `CustomScrollView`). |
+| `flutter_scroll_into_view` | `by`, `value`, `alignment`, `timeout_ms: Option<u64>` | Desplaza un contenedor hasta que el widget objetivo sea visible en pantalla. |
 | `flutter_wait_for` | `by`, `value`, `timeout_ms` | Espera asíncrona a que un widget aparezca en el árbol antes de continuar. |
 | `flutter_wait_for_absent` | `by`, `value`, `timeout_ms` | Espera asíncrona a que un widget desaparezca (spinners de carga, modales). |
 | `flutter_screenshot` | `save_path: Option<String>` | Captura de pantalla nativa (PNG) con soporte de guardado en disco. |

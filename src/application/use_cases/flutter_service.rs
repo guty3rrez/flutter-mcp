@@ -50,13 +50,22 @@ impl FlutterAppService for FlutterServiceImpl {
         })
     }
 
-    async fn tap(&self, finder: Finder) -> Result<()> {
-        let gesture = Gesture::Tap { finder };
+    async fn tap(&self, finder: Finder, timeout_ms: Option<u64>) -> Result<()> {
+        let gesture = Gesture::Tap { finder, timeout_ms };
         self.vm_port.dispatch_gesture(&gesture).await
     }
 
-    async fn enter_text(&self, finder: Finder, text: String) -> Result<()> {
-        let gesture = Gesture::EnterText { finder, text };
+    async fn enter_text(
+        &self,
+        finder: Finder,
+        text: String,
+        timeout_ms: Option<u64>,
+    ) -> Result<()> {
+        let gesture = Gesture::EnterText {
+            finder,
+            text,
+            timeout_ms,
+        };
         self.vm_port.dispatch_gesture(&gesture).await
     }
 
@@ -71,6 +80,7 @@ impl FlutterAppService for FlutterServiceImpl {
         dy: f64,
         duration_ms: u64,
         frequency: u32,
+        timeout_ms: Option<u64>,
     ) -> Result<()> {
         let gesture = Gesture::Scroll {
             finder,
@@ -78,12 +88,22 @@ impl FlutterAppService for FlutterServiceImpl {
             dy,
             duration_ms,
             frequency,
+            timeout_ms,
         };
         self.vm_port.dispatch_gesture(&gesture).await
     }
 
-    async fn scroll_into_view(&self, finder: Finder, alignment: f64) -> Result<()> {
-        let gesture = Gesture::ScrollIntoView { finder, alignment };
+    async fn scroll_into_view(
+        &self,
+        finder: Finder,
+        alignment: f64,
+        timeout_ms: Option<u64>,
+    ) -> Result<()> {
+        let gesture = Gesture::ScrollIntoView {
+            finder,
+            alignment,
+            timeout_ms,
+        };
         self.vm_port.dispatch_gesture(&gesture).await
     }
 
@@ -281,6 +301,7 @@ mod tests {
         let expected_finder = Finder::by_key("submit_btn");
         let expected_gesture = Gesture::Tap {
             finder: expected_finder.clone(),
+            timeout_ms: None,
         };
 
         mock_vm
@@ -292,7 +313,30 @@ mod tests {
         let service =
             FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(MockProjectFilesPort::new()));
         service
-            .tap(expected_finder)
+            .tap(expected_finder, None)
+            .await
+            .expect("Tap should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_tap_with_explicit_timeout_ms_threads_into_gesture() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        let expected_finder = Finder::by_key("submit_btn");
+        let expected_gesture = Gesture::Tap {
+            finder: expected_finder.clone(),
+            timeout_ms: Some(1500),
+        };
+
+        mock_vm
+            .expect_dispatch_gesture()
+            .with(mockall::predicate::eq(expected_gesture))
+            .times(1)
+            .returning(|_| Ok(()));
+
+        let service =
+            FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(MockProjectFilesPort::new()));
+        service
+            .tap(expected_finder, Some(1500))
             .await
             .expect("Tap should succeed");
     }
@@ -327,6 +371,7 @@ mod tests {
             dy: -200.0,
             duration_ms: 300,
             frequency: 60,
+            timeout_ms: None,
         };
 
         mock_vm
@@ -338,7 +383,34 @@ mod tests {
         let service =
             FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(MockProjectFilesPort::new()));
         service
-            .scroll(finder, 0.0, -200.0, 300, 60)
+            .scroll(finder, 0.0, -200.0, 300, 60, None)
+            .await
+            .expect("Scroll should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_scroll_with_explicit_timeout_ms_threads_into_gesture() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        let finder = Finder::by_type("ListView");
+        let expected_gesture = Gesture::Scroll {
+            finder: finder.clone(),
+            dx: 0.0,
+            dy: -200.0,
+            duration_ms: 300,
+            frequency: 60,
+            timeout_ms: Some(2500),
+        };
+
+        mock_vm
+            .expect_dispatch_gesture()
+            .with(mockall::predicate::eq(expected_gesture))
+            .times(1)
+            .returning(|_| Ok(()));
+
+        let service =
+            FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(MockProjectFilesPort::new()));
+        service
+            .scroll(finder, 0.0, -200.0, 300, 60, Some(2500))
             .await
             .expect("Scroll should succeed");
     }

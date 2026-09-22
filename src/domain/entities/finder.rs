@@ -16,6 +16,12 @@ pub enum Finder {
     SemanticsLabel(String),
     /// Búsqueda por coordenadas exactas (x, y)
     Coordinates { x: f64, y: f64 },
+    /// Gesto de retroceso estándar (`finderType: "PageBack"` del wire protocol de
+    /// `flutter_driver`). El SDK de Flutter lo resuelve del lado de la app con fallback interno
+    /// (tooltip "Back" -> `CupertinoNavigationBarBackButton`/`BackButtonIcon` por tipo de
+    /// widget) -- no requiere que este servidor conozca el idioma/tooltip real del botón, a
+    /// diferencia de un `Finder::Tooltip("Back")` manual.
+    PageBack,
 }
 
 impl Finder {
@@ -72,7 +78,25 @@ impl Finder {
                 map.insert("dx".into(), serde_json::json!(x));
                 map.insert("dy".into(), serde_json::json!(y));
             }
+            Finder::PageBack => {
+                map.insert("finderType".into(), serde_json::json!("PageBack"));
+            }
         }
         map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_driver_params_page_back_has_no_extra_fields() {
+        let map = Finder::PageBack.to_driver_params();
+        assert_eq!(
+            map.get("finderType").and_then(|v| v.as_str()),
+            Some("PageBack")
+        );
+        assert_eq!(map.len(), 1);
     }
 }

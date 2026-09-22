@@ -19,6 +19,17 @@ pub enum ResolveOutcome {
     NotFound { candidates: Vec<WidgetNode> },
 }
 
+/// Nivel de tolerancia usado por `node_matches`/`any_match` al decidir si un nodo matchea un
+/// finder -- ver `quick_resolve` para la jerarquía de dos niveles que los usa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchMode {
+    /// Igualdad exacta tras `normalize` (comportamiento histórico, case-sensitive).
+    Exact,
+    /// Igualdad completa tras `normalize` + minúsculas -- sigue siendo igualdad, NO substring
+    /// (eso lo cubre `is_similar`, deliberadamente aparte, solo para candidatos sugeridos).
+    CaseInsensitive,
+}
+
 pub struct FinderResolver;
 
 impl FinderResolver {
@@ -33,14 +44,22 @@ impl FinderResolver {
         )
     }
 
-    /// Resuelve `finder` contra `root` (la raíz de un árbol ya podado por `TreePruner`).
-    /// El criterio de match replica lo que `Finder::to_driver_params()` efectivamente le manda
-    /// a Flutter Driver hoy: comparación exacta (case-sensitive, tras normalizar comillas/
-    /// espacios) de todo el string -- `Finder::Text.exact` no se usa acá a propósito porque
-    /// tampoco lo usa `to_driver_params()` (ver test `to_driver_params_ignores_exact_flag`).
-    /// Si esa paridad cambia, hay que actualizar ambos lugares juntos.
+    /// Resuelve `finder` contra `root` (la raíz de un árbol ya podado por `TreePruner`), en dos
+    /// niveles de tolerancia creciente: (1) igualdad exacta tras normalizar comillas/espacios --
+    /// replica lo que `Finder::to_driver_params()` efectivamente le manda a Flutter Driver hoy
+    /// (`Finder::Text.exact` no se usa acá a propósito, ver test `to_driver_params_ignores_exact_flag`);
+    /// (2) si lo anterior no matchea nada, igualdad case-insensitive -- sigue siendo igualdad
+    /// completa del string, NO substring/contains, para no confundir p.ej. un finder "Ok" con un
+    /// nodo "Cook"/"Broken". El substring/fuzzy matching ya existe en `is_similar` y se mantiene
+    /// deliberadamente separado, usado solo para sugerir candidatos en `NotFound`, nunca para
+    /// decidir `Matched` -- si algún día se quiere fusionar ambos, hay que revisar primero el
+    /// test `quick_resolve_case_insensitive_tier_does_not_fall_back_to_substring`, que protege
+    /// justamente esta separación.
     pub fn quick_resolve(root: &WidgetNode, finder: &Finder) -> ResolveOutcome {
-        if Self::any_match(root, finder) {
+        if Self::any_match(root, finder, MatchMode::Exact) {
+            return ResolveOutcome::Matched;
+        }
+        if Self::any_match(root, finder, MatchMode::CaseInsensitive) {
             return ResolveOutcome::Matched;
         }
 
@@ -50,16 +69,20 @@ impl FinderResolver {
         ResolveOutcome::NotFound { candidates }
     }
 
-    fn any_match(node: &WidgetNode, finder: &Finder) -> bool {
-        Self::node_matches(node, finder) || node.children.iter().any(|c| Self::any_match(c, finder))
+    fn any_match(node: &WidgetNode, finder: &Finder, mode: MatchMode) -> bool {
+        Self::node_matches(node, finder, mode)
+            || node
+                .children
+                .iter()
+                .any(|c| Self::any_match(c, finder, mode))
     }
 
-    fn node_matches(node: &WidgetNode, finder: &Finder) -> bool {
+    fn node_matches(node: &WidgetNode, finder: &Finder, mode: MatchMode) -> bool {
         match finder {
-            Finder::Text { text, .. } => matches_normalized(node.text.as_deref(), text),
-            Finder::Tooltip(tip) => matches_normalized(node.tooltip.as_deref(), tip),
+            Finder::Text { text, .. } => matches_normalized(node.text.as_deref(), text, mode),
+            Finder::Tooltip(tip) => matches_normalized(node.tooltip.as_deref(), tip, mode),
             Finder::SemanticsLabel(label) => {
-                matches_normalized(node.semantics_label.as_deref(), label)
+                matches_normalized(node.semantics_label.as_deref(), label, mode)
             }
             _ => false,
         }
@@ -101,10 +124,11 @@ impl FinderResolver {
     }
 }
 
-fn matches_normalized(node_value: Option<&str>, needle: &str) -> bool {
-    node_value
-        .map(normalize)
-        .is_some_and(|v| v == normalize(needle))
+fn matches_normalized(node_value: Option<&str>, needle: &str, mode: MatchMode) -> bool {
+    node_value.map(normalize).is_some_and(|v| match mode {
+        MatchMode::Exact => v == normalize(needle),
+        MatchMode::CaseInsensitive => v.to_lowercase() == normalize(needle).to_lowercase(),
+    })
 }
 
 /// `TreePruner` a veces preserva las comillas literales de la descripción cruda de Flutter
@@ -151,6 +175,7 @@ mod tests {
             x: 1.0,
             y: 1.0
         }));
+        assert!(!FinderResolver::is_slow_finder(&Finder::PageBack));
     }
 
     #[test]
@@ -178,6 +203,49 @@ mod tests {
             FinderResolver::quick_resolve(&root, &Finder::by_semantics_label("Aceptar términos")),
             ResolveOutcome::Matched
         );
+    }
+
+    #[test]
+    fn quick_resolve_matches_case_insensitively_when_no_exact_match_exists() {
+        let mut root = leaf("Scaffold");
+        root.add_child(leaf("Text").with_text("GUARDAR CAMBIOS"));
+
+        let outcome =
+            FinderResolver::quick_resolve(&root, &Finder::by_text("guardar cambios", true));
+        assert_eq!(outcome, ResolveOutcome::Matched);
+    }
+
+    #[test]
+    fn quick_resolve_matches_tooltip_and_semantics_label_case_insensitively() {
+        let mut root = leaf("Scaffold");
+        root.add_child(leaf("IconButton").with_tooltip("cerrar SESIÓN"));
+        root.add_child(leaf("Checkbox").with_semantics_label("ACEPTAR términos"));
+
+        assert_eq!(
+            FinderResolver::quick_resolve(&root, &Finder::by_tooltip("Cerrar Sesión")),
+            ResolveOutcome::Matched
+        );
+        assert_eq!(
+            FinderResolver::quick_resolve(&root, &Finder::by_semantics_label("Aceptar Términos")),
+            ResolveOutcome::Matched
+        );
+    }
+
+    #[test]
+    fn quick_resolve_case_insensitive_tier_does_not_fall_back_to_substring() {
+        let mut root = leaf("Scaffold");
+        root.add_child(leaf("Text").with_text("Guardar cambios"));
+
+        let outcome = FinderResolver::quick_resolve(&root, &Finder::by_text("GUARDAR", true));
+        match outcome {
+            ResolveOutcome::NotFound { candidates } => {
+                assert_eq!(candidates.len(), 1);
+                assert_eq!(candidates[0].text.as_deref(), Some("Guardar cambios"));
+            }
+            ResolveOutcome::Matched => panic!(
+                "el tier case-insensitive es de igualdad completa, no debería matchear un substring"
+            ),
+        }
     }
 
     #[test]
