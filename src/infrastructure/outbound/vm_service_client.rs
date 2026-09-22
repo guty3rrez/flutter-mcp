@@ -460,12 +460,21 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
         .await
     }
 
+    /// Ejecuta un comando `ext.flutter.driver`. Siempre fuerza `frameSync: false`: Flutter
+    /// Driver por defecto espera a que el árbol de widgets quede sin frames/animaciones
+    /// pendientes antes de ejecutar el comando, y una animación perpetua (cursor parpadeante
+    /// de un `TextField` con foco tras `flutter_enter_text`, un `CircularProgressIndicator`
+    /// indeterminado, etc.) lo cuelga hasta el timeout fijo -- validado contra una app real
+    /// (logs de la app: "FlutterDriverExtension: Timeout while executing tap/scrollIntoView/
+    /// get_text ... Future not completed" a los 5000ms). Desactivar frame sync es la mitigación
+    /// estándar del ecosistema Flutter Driver para este problema.
     async fn execute_driver_command(&self, command: &str, mut params: Value) -> Result<Value> {
         let isolate_id = self.state.main_isolate_id_or_default().await;
 
         if let Some(obj) = params.as_object_mut() {
             obj.insert("command".into(), json!(command));
             obj.insert("isolateId".into(), json!(isolate_id));
+            obj.entry("frameSync").or_insert(json!(false));
         }
 
         self.send_rpc("ext.flutter.driver", params).await
