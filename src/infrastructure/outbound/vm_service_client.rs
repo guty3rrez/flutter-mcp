@@ -10,8 +10,10 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::application::error::{ApplicationError, Result};
 use crate::application::ports::outbound::FlutterVmPort;
-use crate::domain::entities::{ErrorSource, Finder, FlutterError, Gesture, LogEntry};
-use crate::domain::services::{ErrorDetector, LogParser};
+use crate::domain::entities::{ErrorSource, Finder, FlutterError, Gesture, LogEntry, WidgetNode};
+use crate::domain::services::{
+    ErrorDetector, FinderResolver, LogParser, ResolveOutcome, TreePruner,
+};
 
 type WsSender = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -33,6 +35,19 @@ const ERROR_BUFFER_CAPACITY: usize = 200;
 /// de forma confiable en la ventana de una sesión de depuración corta — se lee por pull
 /// (`getVMTimeline`) en `get_raw_timeline_events` en su lugar, que sí devolvió el buffer completo.
 const SUBSCRIBED_STREAMS: &[&str] = &["Stdout", "Stderr", "Logging", "Debug"];
+
+/// Timeout normal para gestos vía Flutter Driver cuando el pre-chequeo (`precheck_finder`)
+/// confirma un match, o no aplica (finders `key`/`type`/`coordinates`) -- se espera que
+/// resuelva casi al instante.
+const DEFAULT_GESTURE_TIMEOUT_MS: u64 = 5000;
+/// Timeout acotado para cuando el pre-chequeo no encontró ningún match. Igual se intenta el
+/// comando real -- cero riesgo de falso negativo si la heurística de `TreePruner`/
+/// `FinderResolver` tiene algún gap -- pero sin pagar el costo completo de 5s del caso "no
+/// existe", que es el que originaba el cuelgue reportado.
+const FAST_FAIL_GESTURE_TIMEOUT_MS: u64 = 800;
+/// Profundidad de árbol usada para el pre-chequeo -- misma que usa `get_pruned_snapshot` en la
+/// capa de aplicación para `flutter_snapshot`, así el pre-chequeo ve exactamente lo mismo.
+const PRECHECK_TREE_DEPTH: u32 = 50;
 
 /// Estado compartido entre el adaptador y el task lector en background. Se agrupa en un solo
 /// struct (barato de clonar, son todo `Arc`) para que las funciones de bajo nivel que necesitan
@@ -214,6 +229,56 @@ impl WebSocketVmServiceAdapter {
             .driver_extension_configured
             .store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Pre-chequea `finder` contra el árbol de diagnóstico actual antes de despachar un comando
+    /// de Flutter Driver que lo usaría (ver `FinderResolver`). Devuelve el timeout a usar
+    /// (5000ms si matcheó o el finder no es de los "lentos"; 800ms si no matcheó, como
+    /// salvaguarda de latencia) y, si no matcheó, los candidatos hallados para enriquecer el
+    /// error si el comando real también falla. Si el pre-chequeo mismo no se puede completar
+    /// (RPC caída, árbol vacío, etc.) no bloquea el flujo: cae al timeout completo de siempre,
+    /// como si no se hubiese podido pre-chequear.
+    async fn precheck_finder(&self, finder: &Finder) -> (u64, Vec<WidgetNode>) {
+        if !FinderResolver::is_slow_finder(finder) {
+            return (DEFAULT_GESTURE_TIMEOUT_MS, Vec::new());
+        }
+
+        let Ok(raw_tree) = self.get_diagnostics_tree(PRECHECK_TREE_DEPTH).await else {
+            return (DEFAULT_GESTURE_TIMEOUT_MS, Vec::new());
+        };
+        let Some(root) = TreePruner::prune_diagnostics_tree(&raw_tree) else {
+            return (DEFAULT_GESTURE_TIMEOUT_MS, Vec::new());
+        };
+
+        match FinderResolver::quick_resolve(&root, finder) {
+            ResolveOutcome::Matched => (DEFAULT_GESTURE_TIMEOUT_MS, Vec::new()),
+            ResolveOutcome::NotFound { candidates } => (FAST_FAIL_GESTURE_TIMEOUT_MS, candidates),
+        }
+    }
+}
+
+/// Si `err` es un `DriverError` y hay candidatos, les agrega una sugerencia legible al mensaje
+/// -- ver `WebSocketVmServiceAdapter::precheck_finder`. No modifica otras variantes de error.
+fn append_candidate_hint(err: ApplicationError, candidates: &[WidgetNode]) -> ApplicationError {
+    let suggestions: Vec<String> = candidates
+        .iter()
+        .filter_map(|c| {
+            c.text
+                .clone()
+                .or_else(|| c.tooltip.clone())
+                .or_else(|| c.semantics_label.clone())
+        })
+        .collect();
+    if suggestions.is_empty() {
+        return err;
+    }
+    match err {
+        ApplicationError::DriverError(msg) => ApplicationError::DriverError(format!(
+            "{msg} Candidatos con texto/tooltip/semantics parecido encontrados en el árbol \
+actual: {}.",
+            suggestions.join(", ")
+        )),
+        other => other,
     }
 }
 
@@ -570,17 +635,21 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
     async fn dispatch_gesture(&self, gesture: &Gesture) -> Result<()> {
         match gesture {
             Gesture::Tap { finder } => {
+                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
                 let mut map = finder.to_driver_params();
-                map.insert("timeout".into(), json!("5000"));
+                map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("tap", Value::Object(map))
-                    .await?;
+                    .await
+                    .map_err(|e| append_candidate_hint(e, &candidates))?;
                 Ok(())
             }
             Gesture::EnterText { finder, text } => {
+                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
                 let mut tap_map = finder.to_driver_params();
-                tap_map.insert("timeout".into(), json!("5000"));
+                tap_map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("tap", Value::Object(tap_map))
-                    .await?;
+                    .await
+                    .map_err(|e| append_candidate_hint(e, &candidates))?;
 
                 let params = json!({
                     "text": text,
@@ -590,10 +659,12 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                 Ok(())
             }
             Gesture::ClearText { finder } => {
+                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
                 let mut tap_map = finder.to_driver_params();
-                tap_map.insert("timeout".into(), json!("5000"));
+                tap_map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("tap", Value::Object(tap_map))
-                    .await?;
+                    .await
+                    .map_err(|e| append_candidate_hint(e, &candidates))?;
 
                 let params = json!({
                     "text": "",
@@ -609,22 +680,26 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                 duration_ms,
                 frequency,
             } => {
+                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
                 let mut map = finder.to_driver_params();
                 map.insert("dx".into(), json!(dx.to_string()));
                 map.insert("dy".into(), json!(dy.to_string()));
                 map.insert("duration".into(), json!((duration_ms * 1000).to_string()));
                 map.insert("frequency".into(), json!(frequency.to_string()));
-                map.insert("timeout".into(), json!("5000"));
+                map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("scroll", Value::Object(map))
-                    .await?;
+                    .await
+                    .map_err(|e| append_candidate_hint(e, &candidates))?;
                 Ok(())
             }
             Gesture::ScrollIntoView { finder, alignment } => {
+                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
                 let mut map = finder.to_driver_params();
                 map.insert("alignment".into(), json!(alignment.to_string()));
-                map.insert("timeout".into(), json!("5000"));
+                map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("scrollIntoView", Value::Object(map))
-                    .await?;
+                    .await
+                    .map_err(|e| append_candidate_hint(e, &candidates))?;
                 Ok(())
             }
             Gesture::ScrollUntilVisible {
@@ -656,17 +731,23 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                         .execute_driver_command("scroll", Value::Object(scroll_map))
                         .await;
                 }
-                Ok(())
+                Err(ApplicationError::WidgetNotFound(format!(
+                    "scrollUntilVisible agotó {max_scrolls} scrolls (delta={delta}) sin \
+encontrar el target. Puede que no exista, que el finder no matchee, o que 'scrollable' no sea \
+el contenedor correcto -- confirmá con 'flutter_snapshot'."
+                )))
             }
         }
     }
 
     async fn get_text(&self, finder: &Finder) -> Result<String> {
+        let (timeout_ms, candidates) = self.precheck_finder(finder).await;
         let mut map = finder.to_driver_params();
-        map.insert("timeout".into(), json!("5000"));
+        map.insert("timeout".into(), json!(timeout_ms.to_string()));
         let result = self
             .execute_driver_command("get_text", Value::Object(map))
-            .await?;
+            .await
+            .map_err(|e| append_candidate_hint(e, &candidates))?;
 
         let text_opt = result
             .get("response")
