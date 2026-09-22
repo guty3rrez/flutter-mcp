@@ -25,9 +25,9 @@ Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dib
 
 ---
 
-## 🛠️ Catálogo de Herramientas MCP (16 Herramientas)
+## 🛠️ Catálogo de Herramientas MCP (18 Herramientas)
 
-`flutter-mcp` expone 16 herramientas a través del Model Context Protocol:
+`flutter-mcp` expone 18 herramientas a través del Model Context Protocol:
 
 | Herramienta | Parámetros | Descripción |
 | :--- | :--- | :--- |
@@ -44,9 +44,11 @@ Flutter no utiliza la jerarquía DOM tradicional de los sistemas operativos: dib
 | `flutter_screenshot` | `save_path: Option<String>` | Captura de pantalla nativa (PNG) con soporte de guardado en disco. |
 | `flutter_hot_reload` | *(ninguno)* | Recarga en caliente instantánea sin perder el estado de la aplicación. |
 | `flutter_hot_restart` | *(ninguno)* | Reinicio completo y reensamblado del árbol de widgets en la app Flutter. |
+| `flutter_start_control` | `project_root`, `entrypoint`, `revert_after_restart` | Inyecta en caliente Flutter Driver en el entrypoint de una app YA conectada (sin necesitar un `main_driver.dart` separado) y dispara un Hot Restart para activarlo. Requiere que `flutter_driver` ya sea una dependencia resuelta del proyecto — ver [Inyección de control en vivo](#-inyección-de-control-en-vivo-sin-necesitar-main_driverdart) más abajo. |
 | `flutter_get_logs` | `filter`, `source`, `limit` | Lee stdout/stderr/`dart:developer.log` acumulados desde la conexión. Por defecto, las últimas 100 líneas. |
 | `flutter_get_errors` | `limit`, `precise` | Lee errores de framework (red screens) que la app imprimió por stdout/stderr. **Limitación validada:** no detecta excepciones Dart/async genéricas no capturadas — el engine las reporta directo a stderr nativo, sin pasar por el sink `dart:io` que esta tool observa; `precise: true` (modo pausa en excepción) tampoco las capturó en pruebas contra un dispositivo real. |
 | `flutter_get_performance` | `window_ms`, `include_frames` | Obtiene un reporte de jank/build/raster derivado del stream `Timeline` acumulado. |
+| `flutter_driver_raw` | `command: String`, `params: object` | Passthrough a un comando arbitrario de `ext.flutter.driver` por nombre, para comandos del SDK o extensiones de driver personalizadas no cubiertas por una tool dedicada. |
 
 ---
 
@@ -97,6 +99,16 @@ flutter run -d linux -t lib/main_driver.dart
 # Toma nota de la URI del Dart VM Service que imprime la consola:
 # A Dart VM Service on Linux is available at: ws://127.0.0.1:45678/ws
 ```
+
+#### 🚀 Inyección de control en vivo (sin necesitar `main_driver.dart`)
+
+Si preferís no mantener un entrypoint separado, lanzá la app de forma normal (`flutter run -d linux`, sin el flag `-t`) y llamá a `flutter_start_control` **después** de `flutter_connect`:
+
+1. `flutter_driver` debe ser ya una dependencia resuelta del proyecto (declarada en `pubspec.yaml` y presente en `pubspec.lock`). Si no lo es, `flutter_start_control` la agrega a `dev_dependencies` y se detiene ahí — corré `flutter pub get` y **reiniciá por completo** `flutter run` (un Hot Restart solo no alcanza para resolver una dependencia nueva), y volvé a llamar a la tool.
+2. Una vez resuelta, `flutter_start_control` parcha `lib/main.dart` (o el `entrypoint` que le pases) para llamar a `enableFlutterDriverExtension()` antes de `runApp()`, y dispara un Hot Restart para que `main()` se re-ejecute con el parche aplicado — sin necesidad de relanzar el proceso. Es idempotente: si el entrypoint ya tiene la extensión habilitada, solo dispara el Hot Restart.
+3. Por defecto el cambio queda en el archivo (para sobrevivir a futuros Hot Reload/Restart de la sesión). Pasá `revert_after_restart: true` para restaurar el archivo original justo después del restart — la extensión igual queda registrada en el binding de la app en ejecución, ya que ese registro vive en memoria, no en el archivo fuente.
+
+Esto funciona igual bajo [FVM](https://fvm.app/): la dependencia `sdk: flutter` que se inyecta resuelve contra el SDK de Flutter que esté fijado para el proyecto (`.fvm/flutter_sdk`), igual que cualquier otra dependencia.
 
 ### 2. Configurar Clientes MCP
 
@@ -151,17 +163,20 @@ graph LR
     subgraph Core [Núcleo de Dominio y Aplicación]
         AppPort["FlutterAppService (Puerto Inbound)"]
         UseCase["FlutterServiceImpl (Casos de Uso)"]
-        Domain["TreePruner | LogParser | ErrorDetector | TimelineAnalyzer"]
+        Domain["TreePruner | LogParser | ErrorDetector | TimelineAnalyzer | DriverInjector | PubspecEditor"]
         VMPort["FlutterVmPort (SPI Outbound)"]
+        FilesPort["ProjectFilesPort (SPI Outbound)"]
     end
 
     subgraph OutboundAdapter [Adaptador Secundario / Outbound]
         WSAdapter["WebSocketVmServiceAdapter (tokio-tungstenite + reader de streams en background)"]
         MockAdapter["MockVmServiceAdapter (Pruebas)"]
+        FSAdapter["LocalFileSystemAdapter (tokio::fs)"]
     end
 
-    subgraph Target [Motor Flutter]
+    subgraph Target [Motor Flutter / Proyecto]
         VM["Dart VM Service (ext.flutter.*)"]
+        FS["lib/main.dart + pubspec.yaml"]
     end
 
     Client -->|JSON-RPC 2.0 stdio| MCPServer
@@ -169,9 +184,12 @@ graph LR
     AppPort --> UseCase
     UseCase --> Domain
     UseCase --> VMPort
+    UseCase --> FilesPort
     VMPort --> WSAdapter
     VMPort -.-> MockAdapter
+    FilesPort --> FSAdapter
     WSAdapter -->|JSON-RPC 2.0 WebSockets| VM
+    FSAdapter -->|lectura/escritura| FS
 ```
 
 ---

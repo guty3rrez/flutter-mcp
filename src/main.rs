@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use flutter_mcp::{
-    FlutterMcpServer, FlutterServiceImpl, FlutterVmPort, MockVmServiceAdapter,
-    WebSocketVmServiceAdapter,
+    FlutterMcpServer, FlutterServiceImpl, FlutterVmPort, LocalFileSystemAdapter,
+    MockVmServiceAdapter, WebSocketVmServiceAdapter,
 };
 
 #[tokio::main]
@@ -31,7 +31,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(WebSocketVmServiceAdapter::new())
     };
 
-    let app_service = Arc::new(FlutterServiceImpl::new(vm_port));
+    let files_port = Arc::new(LocalFileSystemAdapter::new());
+    let app_service = Arc::new(FlutterServiceImpl::new(vm_port, files_port));
     let server = FlutterMcpServer::new(app_service);
 
     tracing::info!("Escuchando en STDIO para comunicación con el agente...");

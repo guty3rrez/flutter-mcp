@@ -3,6 +3,7 @@ pub mod flutter_error;
 pub mod frame_timing;
 pub mod gesture;
 pub mod log_entry;
+pub mod start_control;
 pub mod widget_node;
 
 pub use finder::Finder;
@@ -10,4 +11,5 @@ pub use flutter_error::{ErrorSource, FlutterError};
 pub use frame_timing::{FrameTiming, PerformanceReport};
 pub use gesture::Gesture;
 pub use log_entry::{LogEntry, LogFilter, LogSource};
+pub use start_control::StartControlOutcome;
 pub use widget_node::{RectBounds, WidgetNode};

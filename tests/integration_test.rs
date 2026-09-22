@@ -1,6 +1,6 @@
 use flutter_mcp::{
-    ErrorSource, Finder, FlutterAppService, FlutterError, FlutterServiceImpl, LogEntry, LogFilter,
-    LogSource, MockVmServiceAdapter,
+    ErrorSource, Finder, FlutterAppService, FlutterError, FlutterServiceImpl,
+    LocalFileSystemAdapter, LogEntry, LogFilter, LogSource, MockVmServiceAdapter,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -11,7 +11,10 @@ async fn test_full_hexagonal_flow_with_mock_vm() {
     let mock_adapter = Arc::new(MockVmServiceAdapter::new());
 
     // 2. Instanciar capa de aplicación (puerto primario) inyectando el puerto secundario
-    let app_service = FlutterServiceImpl::new(mock_adapter.clone());
+    let app_service = FlutterServiceImpl::new(
+        mock_adapter.clone(),
+        Arc::new(LocalFileSystemAdapter::new()),
+    );
 
     // 3. Conectar a la app simulada
     app_service
@@ -102,7 +105,10 @@ async fn test_full_hexagonal_flow_with_mock_vm() {
 #[tokio::test]
 async fn test_get_logs_filters_by_source_text_and_limit() {
     let mock_adapter = Arc::new(MockVmServiceAdapter::new());
-    let app_service = FlutterServiceImpl::new(mock_adapter.clone());
+    let app_service = FlutterServiceImpl::new(
+        mock_adapter.clone(),
+        Arc::new(LocalFileSystemAdapter::new()),
+    );
     app_service
         .connect("ws://127.0.0.1:45678/ws")
         .await
@@ -146,7 +152,10 @@ async fn test_get_logs_filters_by_source_text_and_limit() {
 #[tokio::test]
 async fn test_get_errors_default_is_passive_and_precise_enables_pause_mode() {
     let mock_adapter = Arc::new(MockVmServiceAdapter::new());
-    let app_service = FlutterServiceImpl::new(mock_adapter.clone());
+    let app_service = FlutterServiceImpl::new(
+        mock_adapter.clone(),
+        Arc::new(LocalFileSystemAdapter::new()),
+    );
     app_service
         .connect("ws://127.0.0.1:45678/ws")
         .await
@@ -179,7 +188,10 @@ async fn test_get_errors_default_is_passive_and_precise_enables_pause_mode() {
 #[tokio::test]
 async fn test_get_performance_summarizes_timeline_events() {
     let mock_adapter = Arc::new(MockVmServiceAdapter::new());
-    let app_service = FlutterServiceImpl::new(mock_adapter.clone());
+    let app_service = FlutterServiceImpl::new(
+        mock_adapter.clone(),
+        Arc::new(LocalFileSystemAdapter::new()),
+    );
     app_service
         .connect("ws://127.0.0.1:45678/ws")
         .await

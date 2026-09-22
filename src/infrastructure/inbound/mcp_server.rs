@@ -170,6 +170,25 @@ pub struct GetErrorsParams {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct StartControlParams {
+    #[schemars(
+        description = "Directorio raíz del proyecto Flutter (el que contiene pubspec.yaml). Por defecto el directorio de trabajo actual ('.')"
+    )]
+    #[serde(default)]
+    pub project_root: Option<String>,
+    #[schemars(
+        description = "Ruta del entrypoint a parchar, relativa a project_root. Por defecto 'lib/main.dart'"
+    )]
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[schemars(
+        description = "Si es true, revierte el archivo del entrypoint a su contenido original en disco inmediatamente después del Hot Restart (el registro de la extensión ya quedó activo en el binding en memoria de la app, independiente del archivo). Por defecto false: el cambio queda en el archivo para sobrevivir a futuros Hot Reload/Restart de la sesión."
+    )]
+    #[serde(default)]
+    pub revert_after_restart: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct GetPerformanceParams {
     #[schemars(
         description = "Acotar el análisis a los últimos N milisegundos de timeline (por defecto: todo el buffer acumulado)"
@@ -181,6 +200,23 @@ pub struct GetPerformanceParams {
     )]
     #[serde(default)]
     pub include_frames: Option<bool>,
+}
+
+fn default_driver_raw_params() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DriverRawParams {
+    #[schemars(
+        description = "Nombre del comando de Flutter Driver a ejecutar tal cual (ej. 'set_frame_sync', 'set_text_entry_emulation', 'send_text_input_action', o un comando de una FlutterDriverExtension personalizada de la app)"
+    )]
+    pub command: String,
+    #[schemars(
+        description = "Parámetros del comando como objeto JSON. No incluir 'command' ni 'isolateId': el servidor los agrega automáticamente. Los valores deben ir como string, como exige el protocolo Flutter Driver (ej. {\"enabled\": \"true\"})"
+    )]
+    #[serde(default = "default_driver_raw_params")]
+    pub params: serde_json::Value,
 }
 
 #[derive(Clone)]
@@ -432,6 +468,51 @@ impl FlutterMcpServer {
     }
 
     #[tool(
+        description = "Inyectar en caliente la capacidad de control (Flutter Driver) en el entrypoint principal (lib/main.dart por defecto) de una app Flutter YA conectada que fue lanzada con su entrypoint normal (sin main_driver.dart), y disparar un Hot Restart para activarla. Requisito: 'flutter_driver' debe ser ya una dependencia resuelta del proyecto (pubspec.lock). Si no lo es, esta tool la agrega a pubspec.yaml (dev_dependencies) y se detiene ahí: hace falta correr 'flutter pub get' y reiniciar por completo el proceso 'flutter run' (un Hot Restart no alcanza para resolver una dependencia nueva), y volver a llamar a esta tool. Es idempotente: si el entrypoint ya tiene Flutter Driver habilitado, solo dispara el Hot Restart."
+    )]
+    async fn flutter_start_control(
+        &self,
+        Parameters(params): Parameters<StartControlParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let project_root = params.project_root.unwrap_or_else(|| ".".into());
+        let entrypoint = params.entrypoint.unwrap_or_else(|| "lib/main.dart".into());
+        let revert = params.revert_after_restart.unwrap_or(false);
+
+        match self
+            .app_service
+            .start_control(project_root, entrypoint, revert)
+            .await
+        {
+            Ok(outcome) if outcome.pubspec_updated => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "'flutter_driver' no era una dependencia resuelta del proyecto: se agregó a pubspec.yaml (dev_dependencies). Corré 'flutter pub get' y reiniciá por completo 'flutter run' (un Hot Restart no basta para una dependencia nueva), luego volvé a llamar a flutter_start_control. Entrypoint objetivo: {}",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Ok(outcome) if outcome.already_enabled => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "El entrypoint '{}' ya tenía Flutter Driver habilitado. Hot Restart ejecutado para asegurar que la extensión esté activa.",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Ok(outcome) => {
+                let revert_note = if outcome.reverted {
+                    " El archivo en disco fue revertido a su versión original tras el restart."
+                } else {
+                    ""
+                };
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "Flutter Driver inyectado en '{}' y Hot Restart ejecutado con éxito -- la app ahora acepta comandos de control.{revert_note}",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error activando control de la app: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
         description = "Tomar una captura de pantalla (screenshot) de la interfaz de la app Flutter"
     )]
     async fn flutter_screenshot(
@@ -625,6 +706,30 @@ impl FlutterMcpServer {
             }
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "Error obteniendo reporte de rendimiento: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Ejecutar un comando arbitrario de la extensión ext.flutter.driver por su nombre (passthrough directo, sin necesitar una tool dedicada). Útil para comandos del SDK no cubiertos todavía por otra tool ('set_frame_sync', 'set_text_entry_emulation', 'send_text_input_action', etc.) o una extensión de Flutter Driver personalizada de la app. El servidor agrega automáticamente 'command'/'isolateId' y aplica la misma configuración lazy de frame-sync/text-entry-emulation y validación de isError que el resto de las tools de gestos."
+    )]
+    async fn flutter_driver_raw(
+        &self,
+        Parameters(params): Parameters<DriverRawParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let command = params.command.clone();
+        match self
+            .app_service
+            .driver_raw(params.command, params.params)
+            .await
+        {
+            Ok(result) => {
+                let json_repr = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| "Error al serializar respuesta".into());
+                Ok(CallToolResult::success(vec![ContentBlock::text(json_repr)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error ejecutando comando '{command}' de Flutter Driver: {e}"
             ))])),
         }
     }

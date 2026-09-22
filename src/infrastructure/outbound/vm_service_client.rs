@@ -47,6 +47,11 @@ struct VmConnectionState {
     errors: Arc<Mutex<VecDeque<FlutterError>>>,
     error_detector: Arc<Mutex<ErrorDetector>>,
     precise_errors_enabled: Arc<AtomicBool>,
+    /// `true` una vez que `set_frame_sync(false)` y `set_text_entry_emulation(true)` fueron
+    /// aplicados exitosamente contra la instancia ACTUAL de `FlutterDriverExtension`. Un Hot
+    /// Restart recrea esa instancia con sus defaults (frameSync=true, sin emulación) porque
+    /// re-ejecuta `main()`, así que `trigger_hot_restart`/`disconnect` resetean este flag.
+    driver_extension_configured: Arc<AtomicBool>,
 }
 
 impl VmConnectionState {
@@ -60,6 +65,7 @@ impl VmConnectionState {
             errors: Arc::new(Mutex::new(VecDeque::new())),
             error_detector: Arc::new(Mutex::new(ErrorDetector::new())),
             precise_errors_enabled: Arc::new(AtomicBool::new(false)),
+            driver_extension_configured: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -161,12 +167,85 @@ impl WebSocketVmServiceAdapter {
             tracing::warn!("No se pudo suscribir al stream '{stream_id}': {e}");
         }
     }
+
+    /// Envía un comando `ext.flutter.driver` tal cual, sin pasar por
+    /// `ensure_driver_extension_configured` (usado tanto por el trait público como por la propia
+    /// configuración lazy, para evitar recursión infinita entre ambas).
+    async fn execute_driver_command_raw(&self, command: &str, mut params: Value) -> Result<Value> {
+        let isolate_id = self.state.main_isolate_id_or_default().await;
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("command".into(), json!(command));
+            obj.insert("isolateId".into(), json!(isolate_id));
+        }
+
+        let result = self.send_rpc("ext.flutter.driver", params).await?;
+        if driver_result_is_error(&result) {
+            return Err(ApplicationError::DriverError(driver_error_message(
+                command, &result,
+            )));
+        }
+        Ok(result)
+    }
+
+    /// Configura, una única vez por instancia activa de `FlutterDriverExtension`, frame sync
+    /// desactivado (mitiga el cuelgue de 5s por animaciones perpetuas -- cursor parpadeante,
+    /// spinners, backdrop filters) y emulación de teclado activada (requisito real de
+    /// `enter_text` para inyectar texto en un `EditableText`). Ambas son comandos explícitos de
+    /// Flutter Driver, NO un parámetro de cada comando individual -- confirmado en vivo contra
+    /// una app real que el SDK ignora por completo un campo `frameSync` puesto en los params de
+    /// `tap`/`scroll`/etc. Los valores van serializados como STRING ("false"/"true"), como el
+    /// resto del protocolo Flutter Driver. Si la configuración falla, el flag queda en `false`
+    /// para reintentar en la próxima llamada en vez de quedar falsamente marcada como lista.
+    async fn ensure_driver_extension_configured(&self) -> Result<()> {
+        if self
+            .state
+            .driver_extension_configured
+            .load(Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+
+        self.execute_driver_command_raw("set_frame_sync", json!({ "enabled": "false" }))
+            .await?;
+        self.execute_driver_command_raw("set_text_entry_emulation", json!({ "enabled": "true" }))
+            .await?;
+
+        self.state
+            .driver_extension_configured
+            .store(true, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 impl Default for WebSocketVmServiceAdapter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Detecta si un resultado de `ext.flutter.driver` señala una falla lógica reportada por Flutter
+/// Driver mismo (`Command.isError == true`) en vez de una falla de transporte JSON-RPC -- Flutter
+/// Driver devuelve estas fallas (timeout interno, finder ambiguo, etc.) como una respuesta
+/// JSON-RPC *exitosa*. Defensivo ante `isError` serializado como bool JSON o como string "true"
+/// (todos los demás parámetros del protocolo Flutter Driver van codificados como string).
+fn driver_result_is_error(result: &Value) -> bool {
+    match result.get("isError") {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s.eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+/// Construye el mensaje de `ApplicationError::DriverError` a partir de un resultado con
+/// `isError: true`, usando el campo `response` (el mensaje humano que arma Flutter Driver) si
+/// está presente, o el JSON crudo como fallback.
+fn driver_error_message(command: &str, result: &Value) -> String {
+    let response = result
+        .get("response")
+        .and_then(|r| r.as_str())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| result.to_string());
+    format!("Flutter Driver reportó un error ejecutando '{command}': {response}")
 }
 
 async fn push_bounded<T>(buffer: &Arc<Mutex<VecDeque<T>>>, item: T, capacity: usize) {
@@ -423,6 +502,9 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
         self.state
             .precise_errors_enabled
             .store(false, Ordering::SeqCst);
+        self.state
+            .driver_extension_configured
+            .store(false, Ordering::SeqCst);
 
         if let Some(handle) = self.reader_task.lock().await.take() {
             handle.abort();
@@ -460,24 +542,16 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
         .await
     }
 
-    /// Ejecuta un comando `ext.flutter.driver`. Siempre fuerza `frameSync: false`: Flutter
-    /// Driver por defecto espera a que el árbol de widgets quede sin frames/animaciones
-    /// pendientes antes de ejecutar el comando, y una animación perpetua (cursor parpadeante
-    /// de un `TextField` con foco tras `flutter_enter_text`, un `CircularProgressIndicator`
-    /// indeterminado, etc.) lo cuelga hasta el timeout fijo -- validado contra una app real
-    /// (logs de la app: "FlutterDriverExtension: Timeout while executing tap/scrollIntoView/
-    /// get_text ... Future not completed" a los 5000ms). Desactivar frame sync es la mitigación
-    /// estándar del ecosistema Flutter Driver para este problema.
-    async fn execute_driver_command(&self, command: &str, mut params: Value) -> Result<Value> {
-        let isolate_id = self.state.main_isolate_id_or_default().await;
-
-        if let Some(obj) = params.as_object_mut() {
-            obj.insert("command".into(), json!(command));
-            obj.insert("isolateId".into(), json!(isolate_id));
-            obj.entry("frameSync").or_insert(json!(false));
-        }
-
-        self.send_rpc("ext.flutter.driver", params).await
+    /// Ejecuta un comando `ext.flutter.driver`. Antes de la primera ejecución (y de nuevo tras
+    /// cada Hot Restart) aplica la configuración lazy de frame-sync/text-entry-emulation -- ver
+    /// `ensure_driver_extension_configured`. Valida además `isError` en la respuesta: Flutter
+    /// Driver reporta sus propias fallas (timeout interno, finder ambiguo) como una respuesta
+    /// JSON-RPC *exitosa* con `isError: true`, así que devolver `Ok(result)` sin chequear eso
+    /// enmascararía la falla ante quien llama (tap/get_text/wait_for/screenshot fallando en
+    /// silencio con un "éxito" falso).
+    async fn execute_driver_command(&self, command: &str, params: Value) -> Result<Value> {
+        self.ensure_driver_extension_configured().await?;
+        self.execute_driver_command_raw(command, params).await
     }
 
     async fn dispatch_gesture(&self, gesture: &Gesture) -> Result<()> {
@@ -489,7 +563,12 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                     .await?;
                 Ok(())
             }
-            Gesture::EnterText { text, .. } => {
+            Gesture::EnterText { finder, text } => {
+                let mut tap_map = finder.to_driver_params();
+                tap_map.insert("timeout".into(), json!("5000"));
+                self.execute_driver_command("tap", Value::Object(tap_map))
+                    .await?;
+
                 let params = json!({
                     "text": text,
                     "timeout": "5000"
@@ -497,7 +576,12 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                 self.execute_driver_command("enter_text", params).await?;
                 Ok(())
             }
-            Gesture::ClearText { .. } => {
+            Gesture::ClearText { finder } => {
+                let mut tap_map = finder.to_driver_params();
+                tap_map.insert("timeout".into(), json!("5000"));
+                self.execute_driver_command("tap", Value::Object(tap_map))
+                    .await?;
+
                 let params = json!({
                     "text": "",
                     "timeout": "5000"
@@ -612,15 +696,21 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
     async fn trigger_hot_restart(&self) -> Result<()> {
         let isolate_id = self.state.main_isolate_id_or_default().await;
 
-        if self
+        let reassemble_ok = self
             .send_rpc("ext.flutter.reassemble", json!({ "isolateId": isolate_id }))
             .await
-            .is_ok()
-        {
-            return Ok(());
+            .is_ok();
+
+        if !reassemble_ok {
+            self.send_rpc("hotRestart", json!({})).await?;
         }
 
-        self.send_rpc("hotRestart", json!({})).await?;
+        // Cualquiera de las dos vías re-ejecuta main(), recreando FlutterDriverExtension con sus
+        // defaults -- invalidar el flag para que el próximo execute_driver_command la reconfigure.
+        self.state
+            .driver_extension_configured
+            .store(false, Ordering::SeqCst);
+
         Ok(())
     }
 
@@ -696,5 +786,41 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
             .and_then(|e| e.as_array())
             .cloned()
             .unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn driver_result_is_error_detects_bool_true() {
+        assert!(driver_result_is_error(&json!({ "isError": true })));
+    }
+
+    #[test]
+    fn driver_result_is_error_detects_string_true_defensively() {
+        assert!(driver_result_is_error(&json!({ "isError": "true" })));
+    }
+
+    #[test]
+    fn driver_result_is_error_false_when_absent_or_false() {
+        assert!(!driver_result_is_error(&json!({ "response": "ok" })));
+        assert!(!driver_result_is_error(&json!({ "isError": false })));
+    }
+
+    #[test]
+    fn driver_error_message_prefers_response_field() {
+        let result = json!({ "isError": true, "response": "Timed out waiting for X" });
+        let msg = driver_error_message("waitFor", &result);
+        assert!(msg.contains("waitFor"));
+        assert!(msg.contains("Timed out waiting for X"));
+    }
+
+    #[test]
+    fn driver_error_message_falls_back_to_raw_json_without_response() {
+        let result = json!({ "isError": true });
+        let msg = driver_error_message("tap", &result);
+        assert!(msg.contains("isError"));
     }
 }
