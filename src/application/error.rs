@@ -20,6 +20,12 @@ pub enum ApplicationError {
     #[error("Error de serialización/deserialización: {0}")]
     SerializationError(String),
 
+    #[error("Error de sistema de archivos: {0}")]
+    FileSystemError(String),
+
+    #[error("No se encontró una función main() reconocible en '{0}' para inyectar Flutter Driver")]
+    MainNotFound(String),
+
     #[error("Error interno del protocolo: {0}")]
     Internal(String),
 }

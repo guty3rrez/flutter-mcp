@@ -62,3 +62,17 @@ pub trait FlutterVmPort: Send + Sync {
     /// para que la capa de aplicación los transforme en `FrameTiming`/`PerformanceReport`.
     async fn get_raw_timeline_events(&self) -> Result<Vec<Value>>;
 }
+
+/// Puerto secundario para leer/escribir archivos del proyecto Flutter en disco. Usado
+/// únicamente por `flutter_start_control` para inyectar Flutter Driver en el entrypoint y, de
+/// ser necesario, declarar la dependencia en `pubspec.yaml` — separado de `FlutterVmPort` porque
+/// no tiene nada que ver con el Dart VM Service.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait ProjectFilesPort: Send + Sync {
+    /// Lee el contenido completo de un archivo como texto UTF-8.
+    async fn read_to_string(&self, path: &str) -> Result<String>;
+
+    /// Sobreescribe un archivo con el contenido dado (lo crea si no existe).
+    async fn write_string(&self, path: &str, content: &str) -> Result<()>;
+}

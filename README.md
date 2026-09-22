@@ -25,9 +25,9 @@ Flutter bypasses standard operating system DOM hierarchies and renders UI widget
 
 ---
 
-## 🛠️ MCP Tools Reference (16 Tools)
+## 🛠️ MCP Tools Reference (17 Tools)
 
-`flutter-mcp` exposes 16 tools via the Model Context Protocol:
+`flutter-mcp` exposes 17 tools via the Model Context Protocol:
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
@@ -44,6 +44,7 @@ Flutter bypasses standard operating system DOM hierarchies and renders UI widget
 | `flutter_screenshot` | `save_path: Option<String>` | Capture a native PNG screenshot directly from the engine framebuffer. |
 | `flutter_hot_reload` | *(none)* | Trigger an instant Hot Reload without losing application state. |
 | `flutter_hot_restart` | *(none)* | Trigger a complete Hot Restart / Reassemble of the Flutter application. |
+| `flutter_start_control` | `project_root`, `entrypoint`, `revert_after_restart` | Hot-inject Flutter Driver control into an already-connected app's entrypoint (no separate `main_driver.dart` launch required) and trigger a Hot Restart to activate it. Requires `flutter_driver` to already be a resolved project dependency — see [Live control injection](#-live-control-injection-no-main_driverdart-needed) below. |
 | `flutter_get_logs` | `filter`, `source`, `limit` | Read stdout/stderr/`dart:developer.log` output buffered since connecting. Defaults to the last 100 lines. |
 | `flutter_get_errors` | `limit`, `precise` | Read framework errors (red screens) the app printed to stdout/stderr. **Validated limitation:** does not catch generic uncaught Dart/async exceptions — the engine reports those directly to native stderr, bypassing the `dart:io` sink this tool observes; `precise: true` (exception-pause mode) did not catch that case either in real-device testing. |
 | `flutter_get_performance` | `window_ms`, `include_frames` | Get a jank/build/raster report derived from the accumulated `Timeline` stream. |
@@ -98,6 +99,16 @@ flutter run -d linux -t lib/main_driver.dart
 # A Dart VM Service on Linux is available at: ws://127.0.0.1:45678/ws
 ```
 
+#### 🚀 Live control injection (no `main_driver.dart` needed)
+
+If you'd rather not maintain a separate entrypoint, launch the app normally (`flutter run -d linux`, no `-t` flag) and call `flutter_start_control` **after** `flutter_connect`:
+
+1. `flutter_driver` must already be a resolved dependency of the project (declared in `pubspec.yaml` and present in `pubspec.lock`). If it isn't, `flutter_start_control` adds it to `dev_dependencies` and stops there — run `flutter pub get` and **fully restart** `flutter run` (a Hot Restart alone can't resolve a brand-new dependency), then call the tool again.
+2. Once resolved, `flutter_start_control` patches `lib/main.dart` (or the `entrypoint` you pass) to call `enableFlutterDriverExtension()` before `runApp()`, and triggers a Hot Restart so `main()` re-executes with the patch applied — no process relaunch required. It's idempotent: if the entrypoint already has the extension enabled, it only triggers the Hot Restart.
+3. By default the source change stays on disk (so it survives further Hot Reloads/Restarts in the session). Pass `revert_after_restart: true` to restore the original file right after the restart — the extension stays registered in the running app's binding regardless, since that registration lives in memory, not in the source file.
+
+This works the same way under [FVM](https://fvm.app/): the injected `sdk: flutter` dependency resolves against whichever Flutter SDK is pinned for the project (`.fvm/flutter_sdk`), same as any other dependency.
+
 ### 2. Configure MCP Clients
 
 #### Claude Desktop (`claude_desktop_config.json`)
@@ -151,17 +162,20 @@ graph LR
     subgraph Core [Domain & Application Core]
         AppPort["FlutterAppService (Inbound Port)"]
         UseCase["FlutterServiceImpl (Use Cases)"]
-        Domain["TreePruner | LogParser | ErrorDetector | TimelineAnalyzer"]
+        Domain["TreePruner | LogParser | ErrorDetector | TimelineAnalyzer | DriverInjector | PubspecEditor"]
         VMPort["FlutterVmPort (Outbound SPI)"]
+        FilesPort["ProjectFilesPort (Outbound SPI)"]
     end
 
     subgraph OutboundAdapter [Outbound Adapter]
         WSAdapter["WebSocketVmServiceAdapter (tokio-tungstenite + background stream reader)"]
         MockAdapter["MockVmServiceAdapter (Testing)"]
+        FSAdapter["LocalFileSystemAdapter (tokio::fs)"]
     end
 
-    subgraph Target [Flutter Engine]
+    subgraph Target [Flutter Engine / Project]
         VM["Dart VM Service (ext.flutter.*)"]
+        FS["lib/main.dart + pubspec.yaml"]
     end
 
     Client -->|JSON-RPC 2.0 stdio| MCPServer
@@ -169,9 +183,12 @@ graph LR
     AppPort --> UseCase
     UseCase --> Domain
     UseCase --> VMPort
+    UseCase --> FilesPort
     VMPort --> WSAdapter
     VMPort -.-> MockAdapter
+    FilesPort --> FSAdapter
     WSAdapter -->|JSON-RPC 2.0 WebSockets| VM
+    FSAdapter -->|read/write| FS
 ```
 
 ---

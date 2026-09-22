@@ -170,6 +170,25 @@ pub struct GetErrorsParams {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct StartControlParams {
+    #[schemars(
+        description = "Directorio raíz del proyecto Flutter (el que contiene pubspec.yaml). Por defecto el directorio de trabajo actual ('.')"
+    )]
+    #[serde(default)]
+    pub project_root: Option<String>,
+    #[schemars(
+        description = "Ruta del entrypoint a parchar, relativa a project_root. Por defecto 'lib/main.dart'"
+    )]
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[schemars(
+        description = "Si es true, revierte el archivo del entrypoint a su contenido original en disco inmediatamente después del Hot Restart (el registro de la extensión ya quedó activo en el binding en memoria de la app, independiente del archivo). Por defecto false: el cambio queda en el archivo para sobrevivir a futuros Hot Reload/Restart de la sesión."
+    )]
+    #[serde(default)]
+    pub revert_after_restart: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct GetPerformanceParams {
     #[schemars(
         description = "Acotar el análisis a los últimos N milisegundos de timeline (por defecto: todo el buffer acumulado)"
@@ -427,6 +446,51 @@ impl FlutterMcpServer {
             )])),
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "Error en Hot Restart: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Inyectar en caliente la capacidad de control (Flutter Driver) en el entrypoint principal (lib/main.dart por defecto) de una app Flutter YA conectada que fue lanzada con su entrypoint normal (sin main_driver.dart), y disparar un Hot Restart para activarla. Requisito: 'flutter_driver' debe ser ya una dependencia resuelta del proyecto (pubspec.lock). Si no lo es, esta tool la agrega a pubspec.yaml (dev_dependencies) y se detiene ahí: hace falta correr 'flutter pub get' y reiniciar por completo el proceso 'flutter run' (un Hot Restart no alcanza para resolver una dependencia nueva), y volver a llamar a esta tool. Es idempotente: si el entrypoint ya tiene Flutter Driver habilitado, solo dispara el Hot Restart."
+    )]
+    async fn flutter_start_control(
+        &self,
+        Parameters(params): Parameters<StartControlParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let project_root = params.project_root.unwrap_or_else(|| ".".into());
+        let entrypoint = params.entrypoint.unwrap_or_else(|| "lib/main.dart".into());
+        let revert = params.revert_after_restart.unwrap_or(false);
+
+        match self
+            .app_service
+            .start_control(project_root, entrypoint, revert)
+            .await
+        {
+            Ok(outcome) if outcome.pubspec_updated => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "'flutter_driver' no era una dependencia resuelta del proyecto: se agregó a pubspec.yaml (dev_dependencies). Corré 'flutter pub get' y reiniciá por completo 'flutter run' (un Hot Restart no basta para una dependencia nueva), luego volvé a llamar a flutter_start_control. Entrypoint objetivo: {}",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Ok(outcome) if outcome.already_enabled => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "El entrypoint '{}' ya tenía Flutter Driver habilitado. Hot Restart ejecutado para asegurar que la extensión esté activa.",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Ok(outcome) => {
+                let revert_note = if outcome.reverted {
+                    " El archivo en disco fue revertido a su versión original tras el restart."
+                } else {
+                    ""
+                };
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "Flutter Driver inyectado en '{}' y Hot Restart ejecutado con éxito -- la app ahora acepta comandos de control.{revert_note}",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error activando control de la app: {e}"
             ))])),
         }
     }
