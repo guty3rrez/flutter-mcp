@@ -261,3 +261,150 @@ async fn wait_for_absent_sends_timeout_ms_unconverted() {
         .expect("debe haber invocado waitForAbsent");
     assert_eq!(call.get("timeout").and_then(|t| t.as_str()), Some("3000"));
 }
+
+/// Árbol de diagnóstico fake con un único nodo de texto, en el shape que devuelve
+/// `ext.flutter.inspector.getRootWidgetSummaryTree` y que `TreePruner` sabe podar.
+fn tree_with_text(text: &str) -> Value {
+    json!({
+        "description": "Scaffold",
+        "children": [
+            {
+                "description": "Text",
+                "properties": [{"name": "data", "description": text}]
+            }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn tap_uses_fast_fail_timeout_when_precheck_finds_no_match() {
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else if method == "ext.flutter.inspector.getRootWidgetSummaryTree" {
+            tree_with_text("Cancelar")
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::by_text("Texto Que No Existe", true),
+        })
+        .await
+        .expect("el comando real igual se intenta, aunque el pre-chequeo no haya matcheado");
+
+    let logged = params.lock().await;
+    let tap_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("tap"))
+        .expect("debe haber invocado tap");
+    assert_eq!(
+        tap_call.get("timeout").and_then(|t| t.as_str()),
+        Some("800")
+    );
+}
+
+#[tokio::test]
+async fn tap_uses_default_timeout_when_precheck_finds_match() {
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else if method == "ext.flutter.inspector.getRootWidgetSummaryTree" {
+            tree_with_text("Guardar")
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::by_text("Guardar", true),
+        })
+        .await
+        .unwrap();
+
+    let logged = params.lock().await;
+    let tap_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("tap"))
+        .expect("debe haber invocado tap");
+    assert_eq!(
+        tap_call.get("timeout").and_then(|t| t.as_str()),
+        Some("5000")
+    );
+}
+
+#[tokio::test]
+async fn tap_error_includes_candidate_suggestions_when_precheck_finds_similar_text() {
+    let (uri, _commands) = spawn_fake_vm_service(|method, params| {
+        if method == "getVM" {
+            return getvm_result();
+        }
+        if method == "ext.flutter.inspector.getRootWidgetSummaryTree" {
+            return tree_with_text("Guardar cambios");
+        }
+        if method == "ext.flutter.driver"
+            && params.get("command").and_then(|c| c.as_str()) == Some("tap")
+        {
+            return json!({
+                "isError": true,
+                "response": "Timeout while executing tap: TimeoutException after 0:00:00.800000: Future not completed"
+            });
+        }
+        ok_driver_result()
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let err = adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::by_text("Guardar", true),
+        })
+        .await
+        .expect_err("el tap real también falla en este escenario");
+
+    assert!(err.to_string().contains("Guardar cambios"));
+}
+
+#[tokio::test]
+async fn scroll_until_visible_returns_err_when_max_scrolls_exhausted() {
+    let (uri, _commands) = spawn_fake_vm_service(|method, params| {
+        if method == "getVM" {
+            return getvm_result();
+        }
+        if method == "ext.flutter.driver"
+            && params.get("command").and_then(|c| c.as_str()) == Some("waitFor")
+        {
+            return json!({ "isError": true, "response": "Waited ... Timed out" });
+        }
+        ok_driver_result()
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let err = adapter
+        .dispatch_gesture(&Gesture::ScrollUntilVisible {
+            scrollable: None,
+            target: Finder::by_text("Nunca Aparece", true),
+            delta: -200.0,
+            max_scrolls: 2,
+        })
+        .await
+        .expect_err("agotar max_scrolls sin match debe devolver Err, no Ok silencioso");
+
+    assert!(err.to_string().contains("scrollUntilVisible"));
+}
