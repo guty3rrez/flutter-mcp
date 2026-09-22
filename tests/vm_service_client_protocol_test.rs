@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 
 type CommandLog = Arc<Mutex<Vec<String>>>;
+type ParamsLog = Arc<Mutex<Vec<Value>>>;
 
 /// Levanta un servidor WebSocket local de un solo uso que responde a cada RPC JSON-RPC 2.0
 /// entrante con lo que devuelva `responder(method, params)`, y registra el `command` de cada
@@ -22,10 +23,23 @@ async fn spawn_fake_vm_service<F>(responder: F) -> (String, CommandLog)
 where
     F: Fn(&str, &Value) -> Value + Send + Sync + 'static,
 {
+    let (uri, commands, _params) = spawn_fake_vm_service_with_params(responder).await;
+    (uri, commands)
+}
+
+/// Igual que `spawn_fake_vm_service` pero además registra, en el mismo orden, los `params`
+/// completos de cada llamada a `ext.flutter.driver` -- necesario para aserir el valor real de
+/// campos como `timeout` (no solo qué comando se invocó).
+async fn spawn_fake_vm_service_with_params<F>(responder: F) -> (String, CommandLog, ParamsLog)
+where
+    F: Fn(&str, &Value) -> Value + Send + Sync + 'static,
+{
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let commands: CommandLog = Arc::new(Mutex::new(Vec::new()));
     let commands_clone = commands.clone();
+    let params_log: ParamsLog = Arc::new(Mutex::new(Vec::new()));
+    let params_log_clone = params_log.clone();
 
     tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
@@ -41,6 +55,7 @@ where
                 && let Some(command) = params.get("command").and_then(|c| c.as_str())
             {
                 commands_clone.lock().await.push(command.to_string());
+                params_log_clone.lock().await.push(params.clone());
             }
 
             let result = responder(&method, &params);
@@ -49,7 +64,7 @@ where
         }
     });
 
-    (format!("ws://{addr}/ws"), commands)
+    (format!("ws://{addr}/ws"), commands, params_log)
 }
 
 fn ok_driver_result() -> Value {
@@ -188,4 +203,61 @@ async fn clear_text_taps_the_finder_before_clearing_text() {
             "enter_text"
         ]
     );
+}
+
+#[tokio::test]
+async fn wait_for_sends_timeout_ms_unconverted() {
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .wait_for(&Finder::by_text("Hola", true), 2000)
+        .await
+        .unwrap();
+
+    let logged = params.lock().await;
+    let wait_for_call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("waitFor"))
+        .expect("debe haber invocado waitFor");
+    assert_eq!(
+        wait_for_call.get("timeout").and_then(|t| t.as_str()),
+        Some("2000")
+    );
+}
+
+#[tokio::test]
+async fn wait_for_absent_sends_timeout_ms_unconverted() {
+    let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
+        if method == "getVM" {
+            getvm_result()
+        } else {
+            ok_driver_result()
+        }
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .wait_for_absent(&Finder::by_text("Hola", true), 3000)
+        .await
+        .unwrap();
+
+    let logged = params.lock().await;
+    let call = logged
+        .iter()
+        .find(|p| p.get("command").and_then(|c| c.as_str()) == Some("waitForAbsent"))
+        .expect("debe haber invocado waitForAbsent");
+    assert_eq!(call.get("timeout").and_then(|t| t.as_str()), Some("3000"));
 }

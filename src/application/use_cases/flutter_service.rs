@@ -169,7 +169,17 @@ impl FlutterAppService for FlutterServiceImpl {
         let pubspec_path = Self::join_path(&project_root, "pubspec.yaml");
         let entrypoint_path = Self::join_path(&project_root, &entrypoint);
 
-        let pubspec_source = self.files_port.read_to_string(&pubspec_path).await?;
+        let pubspec_source = self
+            .files_port
+            .read_to_string(&pubspec_path)
+            .await
+            .map_err(|_| {
+                ApplicationError::FileSystemError(format!(
+                    "No se encontró pubspec.yaml en '{pubspec_path}' (project_root='{project_root}'). \
+El servidor MCP no corre necesariamente en el directorio de la app Flutter conectada -- pasá \
+'project_root' con la ruta absoluta de esa app (la que contiene pubspec.yaml), no el default."
+                ))
+            })?;
         if !PubspecEditor::declares_flutter_driver(&pubspec_source) {
             let patched = PubspecEditor::add_flutter_driver_dev_dependency(&pubspec_source);
             self.files_port

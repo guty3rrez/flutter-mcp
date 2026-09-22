@@ -238,14 +238,27 @@ fn driver_result_is_error(result: &Value) -> bool {
 
 /// Construye el mensaje de `ApplicationError::DriverError` a partir de un resultado con
 /// `isError: true`, usando el campo `response` (el mensaje humano que arma Flutter Driver) si
-/// está presente, o el JSON crudo como fallback.
+/// está presente, o el JSON crudo como fallback. Si el mensaje es el timeout genérico de
+/// Flutter Driver, agrega una guía: ese timeout es el comportamiento normal de Flutter Driver
+/// cuando el finder nunca resuelve (no hay forma de fallar rápido sin cambiar el protocolo), y
+/// el caso más común es `by: "text"`/`"tooltip"`/`"semantics"` sin match real -- por ejemplo el
+/// hint text de un campo vacío no siempre matchea con `ByText`.
 fn driver_error_message(command: &str, result: &Value) -> String {
     let response = result
         .get("response")
         .and_then(|r| r.as_str())
         .map(ToString::to_string)
         .unwrap_or_else(|| result.to_string());
-    format!("Flutter Driver reportó un error ejecutando '{command}': {response}")
+    let mut message = format!("Flutter Driver reportó un error ejecutando '{command}': {response}");
+    if response.contains("TimeoutException") {
+        message.push_str(
+            " (el widget no se encontró dentro del timeout: usá 'flutter_snapshot' para \
+confirmar que existe y qué finder le corresponde, y preferí 'by: \"key\"' sobre \
+'text'/'tooltip'/'semantics' cuando el widget lo tenga -- el hint text de un campo vacío u \
+otros textos no siempre matchean con esos finders)",
+        );
+    }
+    message
 }
 
 async fn push_bounded<T>(buffer: &Arc<Mutex<VecDeque<T>>>, item: T, capacity: usize) {
@@ -625,7 +638,7 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                     .unwrap_or_else(|| Finder::by_type("Scrollable"));
                 for _ in 0..*max_scrolls {
                     let mut check_map = target.to_driver_params();
-                    check_map.insert("timeout".into(), json!("500000")); // 500ms
+                    check_map.insert("timeout".into(), json!("500")); // 500ms
                     if self
                         .execute_driver_command("waitFor", Value::Object(check_map))
                         .await
@@ -672,7 +685,7 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
 
     async fn wait_for(&self, finder: &Finder, timeout_ms: u64) -> Result<()> {
         let mut map = finder.to_driver_params();
-        map.insert("timeout".into(), json!((timeout_ms * 1000).to_string()));
+        map.insert("timeout".into(), json!(timeout_ms.to_string()));
         self.execute_driver_command("waitFor", Value::Object(map))
             .await?;
         Ok(())
@@ -680,7 +693,7 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
 
     async fn wait_for_absent(&self, finder: &Finder, timeout_ms: u64) -> Result<()> {
         let mut map = finder.to_driver_params();
-        map.insert("timeout".into(), json!((timeout_ms * 1000).to_string()));
+        map.insert("timeout".into(), json!(timeout_ms.to_string()));
         self.execute_driver_command("waitForAbsent", Value::Object(map))
             .await?;
         Ok(())
@@ -822,5 +835,23 @@ mod tests {
         let result = json!({ "isError": true });
         let msg = driver_error_message("tap", &result);
         assert!(msg.contains("isError"));
+    }
+
+    #[test]
+    fn driver_error_message_adds_hint_on_timeout_exception() {
+        let result = json!({
+            "isError": true,
+            "response": "Timeout while executing tap: TimeoutException after 0:00:05.000000: Future not completed"
+        });
+        let msg = driver_error_message("tap", &result);
+        assert!(msg.contains("flutter_snapshot"));
+        assert!(msg.contains("by: \"key\""));
+    }
+
+    #[test]
+    fn driver_error_message_no_hint_without_timeout_exception() {
+        let result = json!({ "isError": true, "response": "Finder ambiguo: 2 matches" });
+        let msg = driver_error_message("tap", &result);
+        assert!(!msg.contains("flutter_snapshot"));
     }
 }
