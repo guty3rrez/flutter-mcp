@@ -263,14 +263,15 @@ async fn wait_for_absent_sends_timeout_ms_unconverted() {
 }
 
 /// Árbol de diagnóstico fake con un único nodo de texto, en el shape que devuelve
-/// `ext.flutter.inspector.getRootWidgetSummaryTree` y que `TreePruner` sabe podar.
+/// `ext.flutter.inspector.getRootWidgetTree(withPreviews: true)` (la RPC real que usa
+/// `get_diagnostics_tree`) y que `TreePruner` sabe podar.
 fn tree_with_text(text: &str) -> Value {
     json!({
         "description": "Scaffold",
         "children": [
             {
                 "description": "Text",
-                "properties": [{"name": "data", "description": text}]
+                "textPreview": text
             }
         ]
     })
@@ -281,7 +282,7 @@ async fn tap_uses_fast_fail_timeout_when_precheck_finds_no_match() {
     let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
         if method == "getVM" {
             getvm_result()
-        } else if method == "ext.flutter.inspector.getRootWidgetSummaryTree" {
+        } else if method == "ext.flutter.inspector.getRootWidgetTree" {
             tree_with_text("Cancelar")
         } else {
             ok_driver_result()
@@ -315,7 +316,7 @@ async fn tap_uses_default_timeout_when_precheck_finds_match() {
     let (uri, _commands, params) = spawn_fake_vm_service_with_params(|method, _| {
         if method == "getVM" {
             getvm_result()
-        } else if method == "ext.flutter.inspector.getRootWidgetSummaryTree" {
+        } else if method == "ext.flutter.inspector.getRootWidgetTree" {
             tree_with_text("Guardar")
         } else {
             ok_driver_result()
@@ -350,7 +351,7 @@ async fn tap_error_includes_candidate_suggestions_when_precheck_finds_similar_te
         if method == "getVM" {
             return getvm_result();
         }
-        if method == "ext.flutter.inspector.getRootWidgetSummaryTree" {
+        if method == "ext.flutter.inspector.getRootWidgetTree" {
             return tree_with_text("Guardar cambios");
         }
         if method == "ext.flutter.driver"
@@ -407,4 +408,61 @@ async fn scroll_until_visible_returns_err_when_max_scrolls_exhausted() {
         .expect_err("agotar max_scrolls sin match debe devolver Err, no Ok silencioso");
 
     assert!(err.to_string().contains("scrollUntilVisible"));
+}
+
+/// Igual que `spawn_fake_vm_service` pero el `responder` puede devolver un error JSON-RPC
+/// (`Err(mensaje)`) en vez de un `result` -- necesario para simular un SDK de Flutter viejo que
+/// no reconoce `ext.flutter.inspector.getRootWidgetTree` y confirmar el fallback a
+/// `getRootWidgetSummaryTree` en `get_diagnostics_tree`.
+async fn spawn_fake_vm_service_fallible<F>(responder: F) -> String
+where
+    F: Fn(&str, &Value) -> Result<Value, String> + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let (mut sink, mut source) = ws.split();
+
+        while let Some(Ok(Message::Text(text))) = source.next().await {
+            let request: Value = serde_json::from_str(&text).unwrap();
+            let method = request["method"].as_str().unwrap_or_default().to_string();
+            let params = request["params"].clone();
+
+            let response = match responder(&method, &params) {
+                Ok(result) => json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }),
+                Err(message) => {
+                    json!({ "jsonrpc": "2.0", "id": request["id"], "error": { "message": message } })
+                }
+            };
+            let _ = sink.send(Message::Text(response.to_string().into())).await;
+        }
+    });
+
+    format!("ws://{addr}/ws")
+}
+
+#[tokio::test]
+async fn get_diagnostics_tree_falls_back_to_legacy_rpc_when_new_one_is_unsupported() {
+    let uri = spawn_fake_vm_service_fallible(|method, _| match method {
+        "getVM" => Ok(getvm_result()),
+        "ext.flutter.inspector.getRootWidgetTree" => Err("Unknown service extension".to_string()),
+        "ext.flutter.inspector.getRootWidgetSummaryTree" => Ok(json!({
+            "description": "Scaffold",
+            "properties": [{"name": "data", "description": "Desde legacy"}]
+        })),
+        _ => Ok(ok_driver_result()),
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let tree = adapter
+        .get_diagnostics_tree(50)
+        .await
+        .expect("debe caer al fallback en vez de propagar el error");
+    assert_eq!(tree["description"], "Scaffold");
 }
