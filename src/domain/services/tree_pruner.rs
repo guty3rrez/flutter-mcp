@@ -82,18 +82,27 @@ impl TreePruner {
             })
         });
 
-        // Extraer Texto
-        let text = properties
-            .and_then(|props| {
-                props.iter().find_map(|prop| {
-                    let name = prop.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    if name == "data" || name == "text" || name == "title" {
-                        prop.get("description")
-                            .and_then(|d| d.as_str())
-                            .map(ToString::to_string)
-                    } else {
-                        None
-                    }
+        // Extraer Texto. Primero `textPreview` -- lo que trae `getRootWidgetTree(
+        // withPreviews: true)`, la RPC real que usa `get_diagnostics_tree` (ver su doc): en la
+        // práctica es la ÚNICA fuente confiable, porque el shape con `properties` de abajo
+        // corresponde a `getDetailsSubtree` (por-nodo, no se llama para el árbol completo) y
+        // rara vez aparece poblado en la respuesta real de un árbol completo.
+        let text = json
+            .get("textPreview")
+            .and_then(|d| d.as_str())
+            .map(ToString::to_string)
+            .or_else(|| {
+                properties.and_then(|props| {
+                    props.iter().find_map(|prop| {
+                        let name = prop.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        if name == "data" || name == "text" || name == "title" {
+                            prop.get("description")
+                                .and_then(|d| d.as_str())
+                                .map(ToString::to_string)
+                        } else {
+                            None
+                        }
+                    })
                 })
             })
             .or_else(|| {
@@ -235,5 +244,37 @@ mod tests {
 
         let pruned = TreePruner::prune_diagnostics_tree(&input);
         assert!(pruned.is_none());
+    }
+
+    /// `getRootWidgetTree(withPreviews: true)` -- la RPC real que usa `get_diagnostics_tree`
+    /// contra un VM Service real, a diferencia del shape con `properties` de
+    /// `getDetailsSubtree` que usan los otros fixtures de este archivo (ver el doc de
+    /// `get_diagnostics_tree` en `vm_service_client.rs` para el porqué de la diferencia).
+    #[test]
+    fn test_extracts_text_from_text_preview_field() {
+        let input = json!({
+            "description": "Scaffold",
+            "children": [
+                {
+                    "description": "Text",
+                    "textPreview": "Administración"
+                }
+            ]
+        });
+
+        let pruned = TreePruner::prune_diagnostics_tree(&input).expect("Should not be None");
+        assert_eq!(pruned.children[0].text.as_deref(), Some("Administración"));
+    }
+
+    #[test]
+    fn test_text_preview_takes_priority_over_properties_when_both_present() {
+        let input = json!({
+            "description": "Text",
+            "textPreview": "Del textPreview",
+            "properties": [{"name": "data", "description": "Del properties"}]
+        });
+
+        let pruned = TreePruner::prune_diagnostics_tree(&input).expect("Should not be None");
+        assert_eq!(pruned.text.as_deref(), Some("Del textPreview"));
     }
 }

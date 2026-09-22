@@ -606,18 +606,46 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
         self.connected.load(Ordering::SeqCst)
     }
 
+    /// `getRootWidgetTree(withPreviews: true)` es una extensión más nueva del Widget
+    /// Inspector -- no soportada por SDKs de Flutter muy viejos -- que devuelve en una sola
+    /// llamada un `textPreview` por nodo con el contenido real de texto. La RPC legacy
+    /// `getRootWidgetSummaryTree` que se usaba antes acá NO incluye ningún `properties` en la
+    /// práctica (confirmado contra una app real corriendo Flutter 3.47: 0 de 128 nodos `Text`
+    /// traían texto extraíble) -- esa data solo existe en `getDetailsSubtree`, que es por-nodo
+    /// y haría falta uno por cada widget del árbol (N+1, inviable para un snapshot completo).
+    /// `TreePruner` fue escrito contra el shape de `getDetailsSubtree` sin darse cuenta de que
+    /// la RPC realmente invocada era otra -- por eso `flutter_snapshot` nunca mostró texto real
+    /// contra apps reales pese a pasar sus tests (que usan fixtures con el shape equivocado).
+    /// Con fallback a la RPC vieja si el SDK conectado no soporta la nueva.
     async fn get_diagnostics_tree(&self, subtree_depth: u32) -> Result<Value> {
         let isolate_id = self.state.main_isolate_id_or_default().await;
 
-        self.send_rpc(
-            "ext.flutter.inspector.getRootWidgetSummaryTree",
-            json!({
-                "isolateId": isolate_id,
-                "objectGroup": "flutter-native-mcp",
-                "subtreeDepth": subtree_depth
-            }),
-        )
-        .await
+        let result = self
+            .send_rpc(
+                "ext.flutter.inspector.getRootWidgetTree",
+                json!({
+                    "isolateId": isolate_id,
+                    "groupName": "flutter-native-mcp",
+                    "isSummaryTree": true,
+                    "withPreviews": true
+                }),
+            )
+            .await;
+
+        match result {
+            Ok(tree) => Ok(tree),
+            Err(_) => {
+                self.send_rpc(
+                    "ext.flutter.inspector.getRootWidgetSummaryTree",
+                    json!({
+                        "isolateId": isolate_id,
+                        "objectGroup": "flutter-native-mcp",
+                        "subtreeDepth": subtree_depth
+                    }),
+                )
+                .await
+            }
+        }
     }
 
     /// Ejecuta un comando `ext.flutter.driver`. Antes de la primera ejecución (y de nuevo tras
