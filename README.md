@@ -25,20 +25,21 @@ Flutter bypasses standard operating system DOM hierarchies and renders UI widget
 
 ---
 
-## 🛠️ MCP Tools Reference (18 Tools)
+## 🛠️ MCP Tools Reference (19 Tools)
 
-`flutter-mcp` exposes 18 tools via the Model Context Protocol:
+`flutter-mcp` exposes 19 tools via the Model Context Protocol:
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
 | `flutter_connect` | `uri: String` | Connect to the running Flutter app's Dart VM Service WebSocket. |
 | `flutter_disconnect` | *(none)* | Cleanly disconnect from the active Dart VM Service session. |
 | `flutter_snapshot` | *(none)* | Retrieve the pruned, semantic UI widget tree optimized for LLMs. |
-| `flutter_tap` | `by: String`, `value: String` | Perform a native tap by `key`, `text`, `tooltip`, `type`, or `semantics`. |
-| `flutter_enter_text` | `by: String`, `value: String`, `text: String` | Type text into interactive form fields (`TextField`, `TextFormField`). |
+| `flutter_tap` | `by: String`, `value: String`, `timeout_ms: Option<u64>` | Perform a native tap by `key`, `text`, `tooltip`, `type`, or `semantics`. `timeout_ms` optionally overrides the automatic precheck heuristic (fast-fail vs. default timeout) and is sent verbatim to Flutter Driver. |
+| `flutter_pop` | `timeout_ms: Option<u64>` | Trigger Flutter Driver's standard `PageBack` gesture. **Validated limitation:** its SDK-side matcher only recognizes a literal, non-localized `Tooltip(message: "Back")` or `CupertinoNavigationBarBackButton` — no generic widget-type fallback. Confirmed against a real Spanish-locale app that it does **not** match even Material's own default `BackButton` (its tooltip localizes away from `"Back"`), let alone a custom `IconButton` back button. Only useful for English-locale or Cupertino apps; otherwise prefer `flutter_tap(by: "key", ...)` on the back button if it has a key. |
+| `flutter_enter_text` | `by: String`, `value: String`, `text: String`, `timeout_ms: Option<u64>` | Type text into interactive form fields (`TextField`, `TextFormField`). `timeout_ms` overrides the timeout of the focus tap that precedes text entry. |
 | `flutter_get_text` | `by: String`, `value: String` | Extract visible text content from any widget. |
-| `flutter_scroll` | `by`, `value`, `dx`, `dy`, `duration_ms`, `frequency` | Programmatically scroll a scrollable widget (`ListView`, `CustomScrollView`). |
-| `flutter_scroll_into_view` | `by`, `value`, `alignment` | Scroll an ancestor container until the target element is visible in the viewport. |
+| `flutter_scroll` | `by`, `value`, `dx`, `dy`, `duration_ms`, `frequency`, `timeout_ms: Option<u64>` | Programmatically scroll a scrollable widget (`ListView`, `CustomScrollView`). |
+| `flutter_scroll_into_view` | `by`, `value`, `alignment`, `timeout_ms: Option<u64>` | Scroll an ancestor container until the target element is visible in the viewport. |
 | `flutter_wait_for` | `by`, `value`, `timeout_ms` | Asynchronously wait for a widget to appear in the tree. |
 | `flutter_wait_for_absent` | `by`, `value`, `timeout_ms` | Asynchronously wait for a widget to disappear (loading indicators, dialogs). |
 | `flutter_screenshot` | `save_path: Option<String>` | Capture a native PNG screenshot directly from the engine framebuffer. |

@@ -255,6 +255,22 @@ impl WebSocketVmServiceAdapter {
             ResolveOutcome::NotFound { candidates } => (FAST_FAIL_GESTURE_TIMEOUT_MS, candidates),
         }
     }
+
+    /// Decide el timeout (ms) a usar para un gesto: si el caller pasó un override explícito
+    /// (`Some`), se usa tal cual y NI SIQUIERA se corre `precheck_finder` -- el caller ya decidió
+    /// cuánto esperar, así que pagar el round-trip de `get_diagnostics_tree`+`TreePruner` sería
+    /// puro desperdicio. Si no hay override (`None`), cae al comportamiento heurístico de
+    /// siempre.
+    async fn resolve_timeout(
+        &self,
+        finder: &Finder,
+        timeout_ms_override: &Option<u64>,
+    ) -> (u64, Vec<WidgetNode>) {
+        match timeout_ms_override {
+            Some(t) => (*t, Vec::new()),
+            None => self.precheck_finder(finder).await,
+        }
+    }
 }
 
 /// Si `err` es un `DriverError` y hay candidatos, les agrega una sugerencia legible al mensaje
@@ -662,8 +678,8 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
 
     async fn dispatch_gesture(&self, gesture: &Gesture) -> Result<()> {
         match gesture {
-            Gesture::Tap { finder } => {
-                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
+            Gesture::Tap { finder, timeout_ms } => {
+                let (timeout_ms, candidates) = self.resolve_timeout(finder, timeout_ms).await;
                 let mut map = finder.to_driver_params();
                 map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("tap", Value::Object(map))
@@ -671,8 +687,12 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                     .map_err(|e| append_candidate_hint(e, &candidates))?;
                 Ok(())
             }
-            Gesture::EnterText { finder, text } => {
-                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
+            Gesture::EnterText {
+                finder,
+                text,
+                timeout_ms,
+            } => {
+                let (timeout_ms, candidates) = self.resolve_timeout(finder, timeout_ms).await;
                 let mut tap_map = finder.to_driver_params();
                 tap_map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("tap", Value::Object(tap_map))
@@ -686,8 +706,8 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                 self.execute_driver_command("enter_text", params).await?;
                 Ok(())
             }
-            Gesture::ClearText { finder } => {
-                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
+            Gesture::ClearText { finder, timeout_ms } => {
+                let (timeout_ms, candidates) = self.resolve_timeout(finder, timeout_ms).await;
                 let mut tap_map = finder.to_driver_params();
                 tap_map.insert("timeout".into(), json!(timeout_ms.to_string()));
                 self.execute_driver_command("tap", Value::Object(tap_map))
@@ -707,8 +727,9 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                 dy,
                 duration_ms,
                 frequency,
+                timeout_ms,
             } => {
-                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
+                let (timeout_ms, candidates) = self.resolve_timeout(finder, timeout_ms).await;
                 let mut map = finder.to_driver_params();
                 map.insert("dx".into(), json!(dx.to_string()));
                 map.insert("dy".into(), json!(dy.to_string()));
@@ -720,8 +741,12 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
                     .map_err(|e| append_candidate_hint(e, &candidates))?;
                 Ok(())
             }
-            Gesture::ScrollIntoView { finder, alignment } => {
-                let (timeout_ms, candidates) = self.precheck_finder(finder).await;
+            Gesture::ScrollIntoView {
+                finder,
+                alignment,
+                timeout_ms,
+            } => {
+                let (timeout_ms, candidates) = self.resolve_timeout(finder, timeout_ms).await;
                 let mut map = finder.to_driver_params();
                 map.insert("alignment".into(), json!(alignment.to_string()));
                 map.insert("timeout".into(), json!(timeout_ms.to_string()));

@@ -41,7 +41,7 @@ async fn test_full_hexagonal_flow_with_mock_vm() {
 
     // 5. Ejecutar un tap sobre el botón
     app_service
-        .tap(Finder::by_key("btn_counter"))
+        .tap(Finder::by_key("btn_counter"), None)
         .await
         .expect("Debe despachar el tap");
 
@@ -54,12 +54,12 @@ async fn test_full_hexagonal_flow_with_mock_vm() {
 
     // 7. Ejecutar scroll y scroll_into_view
     app_service
-        .scroll(Finder::by_type("ListView"), 0.0, -150.0, 300, 60)
+        .scroll(Finder::by_type("ListView"), 0.0, -150.0, 300, 60, None)
         .await
         .expect("Debe despachar scroll");
 
     app_service
-        .scroll_into_view(Finder::by_key("footer_item"), 0.5)
+        .scroll_into_view(Finder::by_key("footer_item"), 0.5, None)
         .await
         .expect("Debe despachar scroll_into_view");
 

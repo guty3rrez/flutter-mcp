@@ -55,6 +55,20 @@ pub struct TapParams {
     pub by: String,
     #[schemars(description = "Valor a buscar (nombre de la key, texto exacto, tooltip, etc.)")]
     pub value: String,
+    #[schemars(
+        description = "Tiempo máximo de espera en milisegundos para el comando de Flutter Driver. Si se omite, se usa la heurística automática de pre-chequeo (800ms si el finder no matchea nada en el árbol actual, 5000ms si matchea o no aplica)."
+    )]
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct FlutterPopParams {
+    #[schemars(
+        description = "Tiempo máximo de espera en milisegundos para el gesto de retroceso (opcional; por defecto usa la heurística automática, igual que flutter_tap)"
+    )]
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -67,6 +81,11 @@ pub struct EnterTextParams {
     pub value: String,
     #[schemars(description = "Texto a ingresar en el campo")]
     pub text: String,
+    #[schemars(
+        description = "Tiempo máximo de espera en milisegundos para el tap de foco previo al ingreso de texto. Si se omite, se usa la heurística automática de pre-chequeo."
+    )]
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -99,6 +118,11 @@ pub struct ScrollParams {
     #[schemars(description = "Frecuencia de muestreo del gesto en Hz (por defecto 60)")]
     #[serde(default)]
     pub frequency: Option<u32>,
+    #[schemars(
+        description = "Tiempo máximo de espera en milisegundos para el comando de Flutter Driver. Si se omite, se usa la heurística automática de pre-chequeo."
+    )]
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -114,6 +138,11 @@ pub struct ScrollIntoViewParams {
     )]
     #[serde(default)]
     pub alignment: Option<f64>,
+    #[schemars(
+        description = "Tiempo máximo de espera en milisegundos para el comando de Flutter Driver. Si se omite, se usa la heurística automática de pre-chequeo."
+    )]
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -290,12 +319,33 @@ impl FlutterMcpServer {
             Err(e) => return Ok(CallToolResult::error(vec![ContentBlock::text(e)])),
         };
 
-        match self.app_service.tap(finder).await {
+        match self.app_service.tap(finder, params.timeout_ms).await {
             Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Tap ejecutado exitosamente",
             )])),
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "Error ejecutando tap: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Ejecutar el gesto de retroceso estándar de Flutter Driver ('PageBack'). LIMITACIÓN VALIDADA contra el SDK y una app real: este finder solo matchea Tooltip(message: 'Back') -- string literal en inglés, NO localizado -- o CupertinoNavigationBarBackButton; no tiene fallback por tipo de widget genérico. En una app con locale distinto a inglés (ej. es-ES) NO matchea ni siquiera el BackButton default de Material, porque su tooltip queda localizado (ej. 'Atrás'), y mucho menos un botón de retroceso custom (IconButton con Icon), el patrón más común en apps de producción. Usar solo si la app está en inglés o es Cupertino; en cualquier otro caso, preferí flutter_tap(by: 'key', ...) sobre el botón de retroceso si tiene una key asignada."
+    )]
+    async fn flutter_pop(
+        &self,
+        Parameters(params): Parameters<FlutterPopParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self
+            .app_service
+            .tap(Finder::PageBack, params.timeout_ms)
+            .await
+        {
+            Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                "Retroceso (pop) ejecutado exitosamente",
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Error ejecutando flutter_pop: {e}"
             ))])),
         }
     }
@@ -310,7 +360,11 @@ impl FlutterMcpServer {
             Err(e) => return Ok(CallToolResult::error(vec![ContentBlock::text(e)])),
         };
 
-        match self.app_service.enter_text(finder, params.text).await {
+        match self
+            .app_service
+            .enter_text(finder, params.text, params.timeout_ms)
+            .await
+        {
             Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Texto ingresado exitosamente",
             )])),
@@ -357,7 +411,14 @@ impl FlutterMcpServer {
 
         match self
             .app_service
-            .scroll(finder, params.dx, params.dy, duration_ms, frequency)
+            .scroll(
+                finder,
+                params.dx,
+                params.dy,
+                duration_ms,
+                frequency,
+                params.timeout_ms,
+            )
             .await
         {
             Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -383,7 +444,11 @@ impl FlutterMcpServer {
 
         let alignment = params.alignment.unwrap_or(0.0);
 
-        match self.app_service.scroll_into_view(finder, alignment).await {
+        match self
+            .app_service
+            .scroll_into_view(finder, alignment, params.timeout_ms)
+            .await
+        {
             Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Widget desplazado hacia la vista con éxito",
             )])),
