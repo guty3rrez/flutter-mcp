@@ -17,10 +17,17 @@ pub enum Finder {
     /// Búsqueda por coordenadas exactas (x, y)
     Coordinates { x: f64, y: f64 },
     /// Gesto de retroceso estándar (`finderType: "PageBack"` del wire protocol de
-    /// `flutter_driver`). El SDK de Flutter lo resuelve del lado de la app con fallback interno
-    /// (tooltip "Back" -> `CupertinoNavigationBarBackButton`/`BackButtonIcon` por tipo de
-    /// widget) -- no requiere que este servidor conozca el idioma/tooltip real del botón, a
-    /// diferencia de un `Finder::Tooltip("Back")` manual.
+    /// `flutter_driver`). **Validado contra el SDK real** (`flutter_driver/lib/src/common/
+    /// handler_factory.dart`, `_createPageBackFinder`): matchea únicamente
+    /// `Tooltip(message: 'Back')` (string literal en inglés, hardcodeado, sin localizar) o
+    /// `CupertinoNavigationBarBackButton` -- NO existe fallback por `BackButtonIcon` ni por tipo
+    /// de widget genérico. **Validado contra una app real (ohmycat, locale es-ES)**: no matchea
+    /// ni siquiera el `BackButton` *canónico* de Material en una app localizada al español,
+    /// porque `MaterialLocalizations.of(context).backButtonTooltip` devuelve "Atrás", no "Back"
+    /// -- y mucho menos un botón de retroceso custom (`IconButton(icon: Icon(...))`), el patrón
+    /// más común en apps de producción. Útil solo para apps en inglés con el `BackButton`
+    /// default, o apps Cupertino. Para cualquier otro caso, usar `Finder::Key` si el botón tiene
+    /// una key, que sí funciona de forma confiable.
     PageBack,
 }
 

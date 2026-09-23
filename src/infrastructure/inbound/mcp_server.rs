@@ -330,7 +330,7 @@ impl FlutterMcpServer {
     }
 
     #[tool(
-        description = "Ejecutar el gesto de retroceso estándar de Flutter Driver ('PageBack'): intenta primero el botón con tooltip 'Back' y, si no existe, cae a los widgets nativos de retroceso (CupertinoNavigationBarBackButton/BackButtonIcon) de forma independiente del idioma de la app. No requiere localizar el widget manualmente ni una extensión Dart personalizada -- preferí esta tool sobre flutter_tap(by: 'tooltip', value: 'Back') porque esa combinación no tiene ese fallback por tipo de widget."
+        description = "Ejecutar el gesto de retroceso estándar de Flutter Driver ('PageBack'). LIMITACIÓN VALIDADA contra el SDK y una app real: este finder solo matchea Tooltip(message: 'Back') -- string literal en inglés, NO localizado -- o CupertinoNavigationBarBackButton; no tiene fallback por tipo de widget genérico. En una app con locale distinto a inglés (ej. es-ES) NO matchea ni siquiera el BackButton default de Material, porque su tooltip queda localizado (ej. 'Atrás'), y mucho menos un botón de retroceso custom (IconButton con Icon), el patrón más común en apps de producción. Usar solo si la app está en inglés o es Cupertino; en cualquier otro caso, preferí flutter_tap(by: 'key', ...) sobre el botón de retroceso si tiene una key asignada."
     )]
     async fn flutter_pop(
         &self,
