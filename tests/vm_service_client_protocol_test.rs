@@ -9,6 +9,7 @@ use flutter_mcp::{Finder, FlutterVmPort, Gesture, WebSocketVmServiceAdapter};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
@@ -621,7 +622,11 @@ where
             let response = match responder(&method, &params) {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }),
                 Err(message) => {
-                    json!({ "jsonrpc": "2.0", "id": request["id"], "error": { "message": message } })
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "error": { "code": -32601, "message": message }
+                    })
                 }
             };
             let _ = sink.send(Message::Text(response.to_string().into())).await;
@@ -652,4 +657,271 @@ async fn get_diagnostics_tree_falls_back_to_legacy_rpc_when_new_one_is_unsupport
         .await
         .expect("debe caer al fallback en vez de propagar el error");
     assert_eq!(tree["description"], "Scaffold");
+}
+
+#[tokio::test]
+async fn driver_method_not_found_returns_helpful_main_driver_instruction() {
+    let uri = spawn_fake_vm_service_fallible(|method, _| match method {
+        "getVM" => Ok(getvm_result()),
+        "ext.flutter.driver" => Err("Method not found: ext.flutter.driver".to_string()),
+        _ => Ok(ok_driver_result()),
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let err = adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::by_key("any_button"),
+            timeout_ms: Some(1000),
+        })
+        .await
+        .expect_err("debe fallar con el error de flutter driver no habilitado");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("lib/main_driver.dart"),
+        "El mensaje debe sugerir lib/main_driver.dart: {msg}"
+    );
+    assert!(
+        msg.contains("enableFlutterDriverExtension"),
+        "El mensaje debe sugerir enableFlutterDriverExtension: {msg}"
+    );
+    assert!(
+        msg.contains("lib/main.dart"),
+        "El mensaje debe recordar no tocar lib/main.dart: {msg}"
+    );
+}
+
+// ==========================================================================
+// Fase B: handler custom de Flutter Driver (key/tooltip/semantics/bounds reales)
+// ==========================================================================
+// `get_diagnostics_tree` intenta primero `try_fetch_rich_tree` (namespaced `request_data` --
+// ver `assets/flutter_mcp_driver_extension.dart` y `vm_service_client.rs`), cayendo al camino
+// legacy (`getRootWidgetTree`/`getRootWidgetSummaryTree`) si la app no expone el handler.
+
+#[tokio::test]
+async fn get_diagnostics_tree_uses_rich_tree_when_handler_present() {
+    let rich_tree = json!({"description": "RichRoot"});
+    let rich_tree_text = rich_tree.to_string();
+
+    let (uri, commands) = spawn_fake_vm_service(move |method, params| {
+        if method == "getVM" {
+            return getvm_result();
+        }
+        if method == "ext.flutter.inspector.getRootWidgetTree"
+            || method == "ext.flutter.inspector.getRootWidgetSummaryTree"
+        {
+            return json!({ "description": "LegacyRoot" });
+        }
+        if method == "ext.flutter.driver"
+            && params.get("command").and_then(|c| c.as_str()) == Some("request_data")
+        {
+            return json!({
+                "isError": false,
+                "response": { "message": rich_tree_text.clone() },
+                "type": "_extensionType"
+            });
+        }
+        ok_driver_result()
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let tree = adapter
+        .get_diagnostics_tree(50)
+        .await
+        .expect("debe usar el árbol rico");
+    assert_eq!(
+        tree, rich_tree,
+        "getRootWidgetTree NUNCA debe llamarse cuando el rico sirve"
+    );
+    assert_eq!(*commands.lock().await, vec!["request_data"]);
+}
+
+#[tokio::test]
+async fn get_diagnostics_tree_falls_back_when_no_rich_tree_handler() {
+    let (uri, commands) = spawn_fake_vm_service(|method, params| {
+        if method == "getVM" {
+            return getvm_result();
+        }
+        if method == "ext.flutter.inspector.getRootWidgetTree" {
+            return json!({ "description": "LegacyRoot" });
+        }
+        if method == "ext.flutter.driver"
+            && params.get("command").and_then(|c| c.as_str()) == Some("request_data")
+        {
+            return json!({
+                "isError": false,
+                "response": { "message": "No requestData Extension registered" },
+                "type": "_extensionType"
+            });
+        }
+        ok_driver_result()
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let tree = adapter
+        .get_diagnostics_tree(50)
+        .await
+        .expect("debe caer al árbol legacy");
+    assert_eq!(tree["description"], "LegacyRoot");
+    assert_eq!(*commands.lock().await, vec!["request_data"]);
+}
+
+#[tokio::test]
+async fn rich_tree_probe_is_cached_and_reset_after_hot_restart() {
+    let handler_available = Arc::new(AtomicBool::new(false));
+    let handler_flag = handler_available.clone();
+    let rich_tree_text = json!({"description": "RichRoot"}).to_string();
+
+    let (uri, commands) = spawn_fake_vm_service(move |method, params| {
+        if method == "getVM" {
+            return getvm_result();
+        }
+        if method == "ext.flutter.inspector.getRootWidgetTree" {
+            return json!({ "description": "LegacyRoot" });
+        }
+        if method == "ext.flutter.driver"
+            && params.get("command").and_then(|c| c.as_str()) == Some("request_data")
+        {
+            let message = if handler_flag.load(Ordering::SeqCst) {
+                rich_tree_text.clone()
+            } else {
+                "No requestData Extension registered".to_string()
+            };
+            return json!({
+                "isError": false,
+                "response": { "message": message },
+                "type": "_extensionType"
+            });
+        }
+        ok_driver_result()
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter.get_diagnostics_tree(50).await.unwrap();
+    adapter.get_diagnostics_tree(50).await.unwrap();
+    assert_eq!(
+        commands
+            .lock()
+            .await
+            .iter()
+            .filter(|c| *c == "request_data")
+            .count(),
+        1,
+        "debe cachear 'no soportado' y no repetir el sondeo en la segunda llamada"
+    );
+
+    adapter.trigger_hot_restart().await.unwrap();
+    commands.lock().await.clear();
+    handler_available.store(true, Ordering::SeqCst);
+
+    let tree = adapter
+        .get_diagnostics_tree(50)
+        .await
+        .expect("debe volver a sondear tras el hot restart");
+    assert_eq!(tree["description"], "RichRoot");
+    assert_eq!(*commands.lock().await, vec!["request_data"]);
+}
+
+#[tokio::test]
+async fn rich_tree_probe_caches_method_not_found_as_unsupported() {
+    let request_data_calls = Arc::new(AtomicU32::new(0));
+    let calls_clone = request_data_calls.clone();
+
+    let uri = spawn_fake_vm_service_fallible(move |method, _| {
+        if method == "getVM" {
+            return Ok(getvm_result());
+        }
+        if method == "ext.flutter.driver" {
+            calls_clone.fetch_add(1, Ordering::SeqCst);
+            return Err("Method not found: ext.flutter.driver".to_string());
+        }
+        if method == "ext.flutter.inspector.getRootWidgetTree" {
+            return Err("Unknown service extension".to_string());
+        }
+        if method == "ext.flutter.inspector.getRootWidgetSummaryTree" {
+            return Ok(json!({ "description": "LegacyRoot" }));
+        }
+        Ok(ok_driver_result())
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    adapter
+        .get_diagnostics_tree(50)
+        .await
+        .expect("debe caer al legacy en la primera llamada");
+    adapter
+        .get_diagnostics_tree(50)
+        .await
+        .expect("debe caer al legacy en la segunda llamada");
+
+    assert_eq!(
+        request_data_calls.load(Ordering::SeqCst),
+        1,
+        "el -32601 de ext.flutter.driver debe cachearse como no-soportado tras el primer intento"
+    );
+}
+
+#[tokio::test]
+async fn rich_tree_probe_does_not_cache_a_transient_bad_response() {
+    let request_data_calls = Arc::new(AtomicU32::new(0));
+    let calls_clone = request_data_calls.clone();
+    let rich_tree_text = json!({"description": "RichRoot"}).to_string();
+
+    let (uri, _commands) = spawn_fake_vm_service(move |method, params| {
+        if method == "getVM" {
+            return getvm_result();
+        }
+        if method == "ext.flutter.inspector.getRootWidgetTree" {
+            return json!({ "description": "LegacyRoot" });
+        }
+        if method == "ext.flutter.driver"
+            && params.get("command").and_then(|c| c.as_str()) == Some("request_data")
+        {
+            let n = calls_clone.fetch_add(1, Ordering::SeqCst);
+            let message = if n == 0 {
+                "esto no es JSON válido ni el centinela esperado".to_string()
+            } else {
+                rich_tree_text.clone()
+            };
+            return json!({
+                "isError": false,
+                "response": { "message": message },
+                "type": "_extensionType"
+            });
+        }
+        ok_driver_result()
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let first = adapter.get_diagnostics_tree(50).await.unwrap();
+    assert_eq!(
+        first["description"], "LegacyRoot",
+        "una respuesta corrupta puntual no debe romper el fallback"
+    );
+
+    let second = adapter.get_diagnostics_tree(50).await.unwrap();
+    assert_eq!(
+        second["description"], "RichRoot",
+        "no debe haberse cacheado como no-soportado, así que reintenta y esta vez sirve"
+    );
+
+    assert_eq!(request_data_calls.load(Ordering::SeqCst), 2);
 }

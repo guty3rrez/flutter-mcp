@@ -1,4 +1,4 @@
-use crate::domain::entities::WidgetNode;
+use crate::domain::entities::{RectBounds, WidgetNode};
 use serde_json::Value;
 
 /// Lista de tipos de widgets conocidos como interactivos en Flutter
@@ -149,6 +149,18 @@ impl TreePruner {
             })
         });
 
+        // Extraer bounds -- solo lo puebla el árbol "rico" del handler custom de Flutter Driver
+        // (Fase B, ver `vm_service_client.rs::try_fetch_rich_tree`); el árbol legacy de
+        // `getRootWidgetTree`/`getRootWidgetSummaryTree` nunca trae este campo.
+        let bounds = json.get("bounds").and_then(|b| {
+            Some(RectBounds::new(
+                b.get("left")?.as_f64()?,
+                b.get("top")?.as_f64()?,
+                b.get("width")?.as_f64()?,
+                b.get("height")?.as_f64()?,
+            ))
+        });
+
         let is_interactive = INTERACTIVE_WIDGETS.contains(&widget_type.as_str())
             || json
                 .get("hasTapHandler")
@@ -189,6 +201,9 @@ impl TreePruner {
         }
         if let Some(sl) = semantics_label {
             node = node.with_semantics_label(sl);
+        }
+        if let Some(b) = bounds {
+            node = node.with_bounds(b);
         }
         node.children = pruned_children;
 
@@ -276,5 +291,30 @@ mod tests {
 
         let pruned = TreePruner::prune_diagnostics_tree(&input).expect("Should not be None");
         assert_eq!(pruned.text.as_deref(), Some("Del textPreview"));
+    }
+
+    /// Shape emitido por el handler custom de Flutter Driver (Fase B, ver
+    /// `vm_service_client.rs::try_fetch_rich_tree` y `assets/flutter_mcp_driver_extension.dart`)
+    /// -- el árbol legacy nunca trae `bounds`.
+    #[test]
+    fn test_extracts_bounds_when_present() {
+        let input = json!({
+            "description": "IconButton",
+            "bounds": {"left": 12.0, "top": 34.5, "width": 48.0, "height": 48.0}
+        });
+
+        let pruned = TreePruner::prune_diagnostics_tree(&input).expect("Should not be None");
+        let bounds = pruned.bounds.expect("debe poblar bounds");
+        assert_eq!(bounds.left, 12.0);
+        assert_eq!(bounds.top, 34.5);
+        assert_eq!(bounds.width, 48.0);
+        assert_eq!(bounds.height, 48.0);
+    }
+
+    #[test]
+    fn test_bounds_absent_when_field_missing() {
+        let input = json!({ "description": "Container" });
+        let pruned = TreePruner::prune_diagnostics_tree(&input).expect("Should not be None");
+        assert!(pruned.bounds.is_none());
     }
 }

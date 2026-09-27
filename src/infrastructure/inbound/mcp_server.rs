@@ -264,7 +264,7 @@ impl FlutterMcpServer {
     }
 
     #[tool(description = "Conectar con el Dart VM Service de una app Flutter en ejecución")]
-    async fn flutter_connect(
+    pub async fn flutter_connect(
         &self,
         Parameters(params): Parameters<ConnectParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -280,7 +280,7 @@ impl FlutterMcpServer {
     }
 
     #[tool(description = "Desconectar la sesión activa del Dart VM Service")]
-    async fn flutter_disconnect(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+    pub async fn flutter_disconnect(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.app_service.disconnect().await {
             Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Desconectado exitosamente de la app Flutter",
@@ -294,7 +294,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Obtener el árbol de UI simplificado y podado (UI Snapshot) de la app Flutter actual"
     )]
-    async fn flutter_snapshot(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+    pub async fn flutter_snapshot(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.app_service.get_pruned_snapshot().await {
             Ok(snapshot) => {
                 let json_repr = serde_json::to_string_pretty(&snapshot)
@@ -310,7 +310,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Hacer tap (clic) sobre un widget localizado por Key, texto, tooltip, tipo o semantics"
     )]
-    async fn flutter_tap(
+    pub async fn flutter_tap(
         &self,
         Parameters(params): Parameters<TapParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -332,7 +332,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Ejecutar el gesto de retroceso estándar de Flutter Driver ('PageBack'). LIMITACIÓN VALIDADA contra el SDK y una app real: este finder solo matchea Tooltip(message: 'Back') -- string literal en inglés, NO localizado -- o CupertinoNavigationBarBackButton; no tiene fallback por tipo de widget genérico. En una app con locale distinto a inglés (ej. es-ES) NO matchea ni siquiera el BackButton default de Material, porque su tooltip queda localizado (ej. 'Atrás'), y mucho menos un botón de retroceso custom (IconButton con Icon), el patrón más común en apps de producción. Usar solo si la app está en inglés o es Cupertino; en cualquier otro caso, preferí flutter_tap(by: 'key', ...) sobre el botón de retroceso si tiene una key asignada."
     )]
-    async fn flutter_pop(
+    pub async fn flutter_pop(
         &self,
         Parameters(params): Parameters<FlutterPopParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -351,7 +351,7 @@ impl FlutterMcpServer {
     }
 
     #[tool(description = "Ingresar texto en un campo interactivo (TextField/TextFormField)")]
-    async fn flutter_enter_text(
+    pub async fn flutter_enter_text(
         &self,
         Parameters(params): Parameters<EnterTextParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -377,7 +377,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Obtener el texto contenido dentro de un widget (Text, EditableText, etc.)"
     )]
-    async fn flutter_get_text(
+    pub async fn flutter_get_text(
         &self,
         Parameters(params): Parameters<GetTextParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -397,7 +397,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Hacer scroll en un contenedor scrollable (ListView, CustomScrollView, etc.)"
     )]
-    async fn flutter_scroll(
+    pub async fn flutter_scroll(
         &self,
         Parameters(params): Parameters<ScrollParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -433,7 +433,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Desplazar un contenedor hasta que el widget objetivo sea completamente visible en pantalla"
     )]
-    async fn flutter_scroll_into_view(
+    pub async fn flutter_scroll_into_view(
         &self,
         Parameters(params): Parameters<ScrollIntoViewParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -461,7 +461,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Esperar a que un widget aparezca en el árbol de widgets (espera asíncrona)"
     )]
-    async fn flutter_wait_for(
+    pub async fn flutter_wait_for(
         &self,
         Parameters(params): Parameters<WaitForParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -485,7 +485,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Esperar a que un widget desaparezca de la pantalla (ej. loaders, diálogos)"
     )]
-    async fn flutter_wait_for_absent(
+    pub async fn flutter_wait_for_absent(
         &self,
         Parameters(params): Parameters<WaitForParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -507,7 +507,7 @@ impl FlutterMcpServer {
     }
 
     #[tool(description = "Disparar Hot Reload en la aplicación Flutter activa")]
-    async fn flutter_hot_reload(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+    pub async fn flutter_hot_reload(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.app_service.hot_reload().await {
             Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Hot Reload ejecutado con éxito",
@@ -521,7 +521,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Disparar Hot Restart / Reassemble completo en la aplicación Flutter activa"
     )]
-    async fn flutter_hot_restart(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+    pub async fn flutter_hot_restart(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.app_service.hot_restart().await {
             Ok(_) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "Hot Restart ejecutado con éxito",
@@ -535,7 +535,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Inyectar en caliente la capacidad de control (Flutter Driver) en el entrypoint principal (lib/main.dart por defecto) de una app Flutter YA conectada que fue lanzada con su entrypoint normal (sin main_driver.dart), y disparar un Hot Restart para activarla. Requisito: 'flutter_driver' debe ser ya una dependencia resuelta del proyecto (pubspec.lock). Si no lo es, esta tool la agrega a pubspec.yaml (dev_dependencies) y se detiene ahí: hace falta correr 'flutter pub get' y reiniciar por completo el proceso 'flutter run' (un Hot Restart no alcanza para resolver una dependencia nueva), y volver a llamar a esta tool. Es idempotente: si el entrypoint ya tiene Flutter Driver habilitado, solo dispara el Hot Restart."
     )]
-    async fn flutter_start_control(
+    pub async fn flutter_start_control(
         &self,
         Parameters(params): Parameters<StartControlParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -554,9 +554,21 @@ impl FlutterMcpServer {
                     outcome.entrypoint_path
                 ))]))
             }
+            Ok(outcome) if outcome.custom_handler_present => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "El entrypoint '{}' ya le pasa su propio 'handler'/'finders'/'commands' a enableFlutterDriverExtension -- no se tocó nada para no perder esa configuración. Hot Restart ejecutado para asegurar que la extensión esté activa. Nota: flutter_snapshot seguirá funcionando, pero sin key/tooltip/semantics/bounds reales (esa mejora requiere adoptar manualmente el handler custom de flutter-native-mcp -- ver README, sección 'Compatibilidad y riesgos').",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Ok(outcome) if outcome.upgraded_from_legacy => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "El entrypoint '{}' tenía el patrón viejo de Flutter Driver (sin key/tooltip/semantics/bounds reales) y se promovió automáticamente al handler custom nuevo. Hot Restart ejecutado -- flutter_snapshot ya puede mostrar esos datos reales.",
+                    outcome.entrypoint_path
+                ))]))
+            }
             Ok(outcome) if outcome.already_enabled => {
                 Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "El entrypoint '{}' ya tenía Flutter Driver habilitado. Hot Restart ejecutado para asegurar que la extensión esté activa.",
+                    "El entrypoint '{}' ya tenía el handler custom de flutter-native-mcp activo (key/tooltip/semantics/bounds reales). Se resincronizó el archivo generado y se ejecutó Hot Restart para asegurar que la extensión esté activa.",
                     outcome.entrypoint_path
                 ))]))
             }
@@ -567,7 +579,7 @@ impl FlutterMcpServer {
                     ""
                 };
                 Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "Flutter Driver inyectado en '{}' y Hot Restart ejecutado con éxito -- la app ahora acepta comandos de control.{revert_note}",
+                    "Flutter Driver inyectado en '{}' y Hot Restart ejecutado con éxito -- la app ahora acepta comandos de control, incluyendo key/tooltip/semantics/bounds reales en flutter_snapshot.{revert_note}",
                     outcome.entrypoint_path
                 ))]))
             }
@@ -580,7 +592,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Tomar una captura de pantalla (screenshot) de la interfaz de la app Flutter"
     )]
-    async fn flutter_screenshot(
+    pub async fn flutter_screenshot(
         &self,
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -613,7 +625,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Leer los logs (stdout/stderr/dart:developer.log) acumulados pasivamente desde que se conectó la app. Por defecto devuelve las últimas 100 líneas; usar 'filter'/'source' para acotar sin gastar contexto."
     )]
-    async fn flutter_get_logs(
+    pub async fn flutter_get_logs(
         &self,
         Parameters(params): Parameters<GetLogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -653,7 +665,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Leer errores de framework (red screens: build/layout/paint) que la app haya impreso por stdout/stderr — vía debugPrint por defecto, o un FlutterError.onError personalizado que también imprima. LIMITACIÓN VALIDADA contra una app Flutter real: esto NO detecta excepciones Dart/async genéricas no capturadas, porque el engine las reporta directo a stderr nativo (fuera del sink dart:io que este VM Service observa) y, en la misma prueba, precise=true tampoco las capturó. Útil para errores de widgets, no como red de seguridad general de crashes."
     )]
-    async fn flutter_get_errors(
+    pub async fn flutter_get_errors(
         &self,
         Parameters(params): Parameters<GetErrorsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -719,7 +731,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Obtener un reporte de rendimiento (jank, tiempos de build/raster por frame) derivado del stream Timeline acumulado desde la conexión. Devuelve un resumen agregado por defecto; usar include_frames=true para el detalle frame a frame."
     )]
-    async fn flutter_get_performance(
+    pub async fn flutter_get_performance(
         &self,
         Parameters(params): Parameters<GetPerformanceParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -778,7 +790,7 @@ impl FlutterMcpServer {
     #[tool(
         description = "Ejecutar un comando arbitrario de la extensión ext.flutter.driver por su nombre (passthrough directo, sin necesitar una tool dedicada). Útil para comandos del SDK no cubiertos todavía por otra tool ('set_frame_sync', 'set_text_entry_emulation', 'send_text_input_action', etc.) o una extensión de Flutter Driver personalizada de la app. El servidor agrega automáticamente 'command'/'isolateId' y aplica la misma configuración lazy de frame-sync/text-entry-emulation y validación de isError que el resto de las tools de gestos."
     )]
-    async fn flutter_driver_raw(
+    pub async fn flutter_driver_raw(
         &self,
         Parameters(params): Parameters<DriverRawParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
@@ -796,6 +808,128 @@ impl FlutterMcpServer {
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "Error ejecutando comando '{command}' de Flutter Driver: {e}"
             ))])),
+        }
+    }
+}
+
+impl FlutterMcpServer {
+    /// Despacha una herramienta por nombre con argumentos JSON arbitrarios.
+    /// Útil para pruebas E2E que validan la deserialización y ejecución como lo haría un cliente MCP.
+    pub async fn dispatch_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> std::result::Result<CallToolResult, String> {
+        match name {
+            "flutter_connect" => {
+                let params: ConnectParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_connect(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_disconnect" => self.flutter_disconnect().await.map_err(|e| e.to_string()),
+            "flutter_snapshot" => self.flutter_snapshot().await.map_err(|e| e.to_string()),
+            "flutter_tap" => {
+                let params: TapParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_tap(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_pop" => {
+                let params: FlutterPopParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_pop(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_enter_text" => {
+                let params: EnterTextParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_enter_text(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_get_text" => {
+                let params: GetTextParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_get_text(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_scroll" => {
+                let params: ScrollParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_scroll(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_scroll_into_view" => {
+                let params: ScrollIntoViewParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_scroll_into_view(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_wait_for" => {
+                let params: WaitForParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_wait_for(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_wait_for_absent" => {
+                let params: WaitForParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_wait_for_absent(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_screenshot" => {
+                let params: ScreenshotParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_screenshot(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_hot_reload" => self.flutter_hot_reload().await.map_err(|e| e.to_string()),
+            "flutter_hot_restart" => self.flutter_hot_restart().await.map_err(|e| e.to_string()),
+            "flutter_start_control" => {
+                let params: StartControlParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_start_control(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_get_logs" => {
+                let params: GetLogsParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_get_logs(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_get_errors" => {
+                let params: GetErrorsParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_get_errors(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_get_performance" => {
+                let params: GetPerformanceParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_get_performance(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "flutter_driver_raw" => {
+                let params: DriverRawParams =
+                    serde_json::from_value(args).map_err(|e| e.to_string())?;
+                self.flutter_driver_raw(Parameters(params))
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            other => Err(format!("Herramienta desconocida: {other}")),
         }
     }
 }

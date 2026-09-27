@@ -6,7 +6,8 @@ use crate::domain::entities::{
     WidgetNode,
 };
 use crate::domain::services::{
-    DEFAULT_FRAME_BUDGET_US, DriverInjector, PubspecEditor, TimelineAnalyzer, TreePruner,
+    DEFAULT_FRAME_BUDGET_US, DriverExtensionState, DriverInjector, PubspecEditor, TimelineAnalyzer,
+    TreePruner,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -214,24 +215,68 @@ El servidor MCP no corre necesariamente en el directorio de la app Flutter conec
                 pubspec_updated: true,
                 hot_restart_triggered: false,
                 reverted: false,
+                upgraded_from_legacy: false,
+                custom_handler_present: false,
             });
         }
 
         let original_source = self.files_port.read_to_string(&entrypoint_path).await?;
-        let already_enabled = DriverInjector::already_enabled(&original_source);
+        let state = DriverInjector::detect_state(&original_source);
 
-        if !already_enabled {
-            let patched = DriverInjector::inject(&original_source)
-                .ok_or_else(|| ApplicationError::MainNotFound(entrypoint_path.clone()))?;
+        // La app ya registra su propio `handler`/`finders`/`commands` -- no se toca nada del
+        // lado Dart (se perdería su configuración). Solo se asegura el Hot Restart para que
+        // Flutter Driver quede activo en la instancia actual.
+        if state == DriverExtensionState::CustomHandlerPresent {
+            self.vm_port.trigger_hot_restart().await?;
+            return Ok(StartControlOutcome {
+                entrypoint_path,
+                already_enabled: true,
+                pubspec_updated: false,
+                hot_restart_triggered: true,
+                reverted: false,
+                upgraded_from_legacy: false,
+                custom_handler_present: true,
+            });
+        }
+
+        let already_enabled = state != DriverExtensionState::NotEnabled;
+        let upgraded_from_legacy = state == DriverExtensionState::UpgradableFromBareCall;
+
+        // `NotEnabled` inyecta el patrón nuevo desde cero; `UpgradableFromBareCall` promueve el
+        // patrón viejo (sin handler) al nuevo; `UpToDate` no toca el entrypoint (`None`) -- solo
+        // re-sincroniza el archivo generado más abajo, por si esta build del MCP trae una
+        // versión más nueva del protocolo.
+        let patched_entrypoint = match state {
+            DriverExtensionState::NotEnabled => Some(
+                DriverInjector::inject(&original_source)
+                    .ok_or_else(|| ApplicationError::MainNotFound(entrypoint_path.clone()))?,
+            ),
+            DriverExtensionState::UpgradableFromBareCall => Some(
+                DriverInjector::upgrade(&original_source)
+                    .expect("detect_state ya garantizó UpgradableFromBareCall"),
+            ),
+            DriverExtensionState::UpToDate => None,
+            DriverExtensionState::CustomHandlerPresent => unreachable!("manejado más arriba"),
+        };
+
+        let handler_path = Self::join_path(
+            &project_root,
+            &format!("lib/{}", DriverInjector::HANDLER_FILE_NAME),
+        );
+        self.files_port
+            .write_string(&handler_path, DriverInjector::HANDLER_SOURCE)
+            .await?;
+
+        if let Some(patched) = &patched_entrypoint {
             self.files_port
-                .write_string(&entrypoint_path, &patched)
+                .write_string(&entrypoint_path, patched)
                 .await?;
         }
 
         self.vm_port.trigger_hot_restart().await?;
 
         let mut reverted = false;
-        if revert_after_restart && !already_enabled {
+        if revert_after_restart && patched_entrypoint.is_some() {
             self.files_port
                 .write_string(&entrypoint_path, &original_source)
                 .await?;
@@ -244,6 +289,8 @@ El servidor MCP no corre necesariamente en el directorio de la app Flutter conec
             pubspec_updated: false,
             hot_restart_triggered: true,
             reverted,
+            upgraded_from_legacy,
+            custom_handler_present: false,
         })
     }
 
@@ -637,7 +684,15 @@ mod tests {
         mock_files
             .expect_write_string()
             .withf(|path, content| {
-                path == "./lib/main.dart" && content.contains("enableFlutterDriverExtension();")
+                path == "./lib/flutter_mcp_driver_extension.dart"
+                    && content == DriverInjector::HANDLER_SOURCE
+            })
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock_files
+            .expect_write_string()
+            .withf(|path, content| {
+                path == "./lib/main.dart" && content.contains("enableFlutterMcpDriverExtension();")
             })
             .times(1)
             .returning(|_, _| Ok(()));
@@ -652,10 +707,12 @@ mod tests {
         assert!(!outcome.pubspec_updated);
         assert!(outcome.hot_restart_triggered);
         assert!(!outcome.reverted);
+        assert!(!outcome.upgraded_from_legacy);
+        assert!(!outcome.custom_handler_present);
     }
 
     #[tokio::test]
-    async fn test_start_control_skips_injection_when_already_enabled() {
+    async fn test_start_control_upgrades_legacy_bare_call_entrypoint() {
         let mut mock_vm = MockFlutterVmPort::new();
         mock_vm.expect_is_connected().times(1).returning(|| true);
         mock_vm
@@ -677,7 +734,110 @@ mod tests {
             .times(1)
             .returning(|_| {
                 Ok(
-                    "void main() {\n  enableFlutterDriverExtension();\n  runApp(const MyApp());\n}\n"
+                    "import 'package:flutter_driver/driver_extension.dart';\n\nvoid main() {\n  enableFlutterDriverExtension();\n  runApp(const MyApp());\n}\n"
+                        .to_string(),
+                )
+            });
+        mock_files
+            .expect_write_string()
+            .withf(|path, content| {
+                path == "./lib/flutter_mcp_driver_extension.dart"
+                    && content == DriverInjector::HANDLER_SOURCE
+            })
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock_files
+            .expect_write_string()
+            .withf(|path, content| {
+                path == "./lib/main.dart" && content.contains("enableFlutterMcpDriverExtension();")
+            })
+            .times(1)
+            .returning(|_, _| Ok(()));
+
+        let service = FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(mock_files));
+        let outcome = service
+            .start_control(".".into(), "lib/main.dart".into(), false)
+            .await
+            .expect("debe promover el patrón viejo al nuevo");
+
+        assert!(outcome.already_enabled);
+        assert!(outcome.hot_restart_triggered);
+        assert!(outcome.upgraded_from_legacy);
+        assert!(!outcome.custom_handler_present);
+    }
+
+    #[tokio::test]
+    async fn test_start_control_resyncs_handler_file_when_already_up_to_date() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm.expect_is_connected().times(1).returning(|| true);
+        mock_vm
+            .expect_trigger_hot_restart()
+            .times(1)
+            .returning(|| Ok(()));
+
+        let mut mock_files = MockProjectFilesPort::new();
+        mock_files
+            .expect_read_to_string()
+            .with(mockall::predicate::eq("./pubspec.yaml"))
+            .times(1)
+            .returning(|_| {
+                Ok("dev_dependencies:\n  flutter_driver:\n    sdk: flutter\n".to_string())
+            });
+        mock_files
+            .expect_read_to_string()
+            .with(mockall::predicate::eq("./lib/main.dart"))
+            .times(1)
+            .returning(|_| {
+                Ok(
+                    "import 'flutter_mcp_driver_extension.dart';\n\nvoid main() {\n  enableFlutterMcpDriverExtension();\n  runApp(const MyApp());\n}\n"
+                        .to_string(),
+                )
+            });
+        mock_files
+            .expect_write_string()
+            .withf(|path, content| {
+                path == "./lib/flutter_mcp_driver_extension.dart"
+                    && content == DriverInjector::HANDLER_SOURCE
+            })
+            .times(1)
+            .returning(|_, _| Ok(()));
+
+        let service = FlutterServiceImpl::new(Arc::new(mock_vm), Arc::new(mock_files));
+        let outcome = service
+            .start_control(".".into(), "lib/main.dart".into(), false)
+            .await
+            .expect("debe resincronizar sin tocar main.dart");
+
+        assert!(outcome.already_enabled);
+        assert!(outcome.hot_restart_triggered);
+        assert!(!outcome.upgraded_from_legacy);
+        assert!(!outcome.custom_handler_present);
+    }
+
+    #[tokio::test]
+    async fn test_start_control_leaves_custom_handler_entrypoint_untouched() {
+        let mut mock_vm = MockFlutterVmPort::new();
+        mock_vm.expect_is_connected().times(1).returning(|| true);
+        mock_vm
+            .expect_trigger_hot_restart()
+            .times(1)
+            .returning(|| Ok(()));
+
+        let mut mock_files = MockProjectFilesPort::new();
+        mock_files
+            .expect_read_to_string()
+            .with(mockall::predicate::eq("./pubspec.yaml"))
+            .times(1)
+            .returning(|_| {
+                Ok("dev_dependencies:\n  flutter_driver:\n    sdk: flutter\n".to_string())
+            });
+        mock_files
+            .expect_read_to_string()
+            .with(mockall::predicate::eq("./lib/main.dart"))
+            .times(1)
+            .returning(|_| {
+                Ok(
+                    "void main() {\n  enableFlutterDriverExtension(handler: myHandler);\n  runApp(const MyApp());\n}\n"
                         .to_string(),
                 )
             });
@@ -687,10 +847,12 @@ mod tests {
         let outcome = service
             .start_control(".".into(), "lib/main.dart".into(), false)
             .await
-            .expect("debe detectar que ya estaba habilitado");
+            .expect("debe dejar la app con handler propio intacta");
 
         assert!(outcome.already_enabled);
         assert!(outcome.hot_restart_triggered);
+        assert!(!outcome.upgraded_from_legacy);
+        assert!(outcome.custom_handler_present);
     }
 
     #[tokio::test]
@@ -720,7 +882,15 @@ mod tests {
         mock_files
             .expect_write_string()
             .withf(|path, content| {
-                path == "./lib/main.dart" && content.contains("enableFlutterDriverExtension")
+                path == "./lib/flutter_mcp_driver_extension.dart"
+                    && content == DriverInjector::HANDLER_SOURCE
+            })
+            .times(1)
+            .returning(|_, _| Ok(()));
+        mock_files
+            .expect_write_string()
+            .withf(|path, content| {
+                path == "./lib/main.dart" && content.contains("enableFlutterMcpDriverExtension")
             })
             .times(1)
             .returning(|_, _| Ok(()));

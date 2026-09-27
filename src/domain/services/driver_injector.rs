@@ -2,28 +2,82 @@
 /// lanzada con su `main.dart` normal, en vez del `main_driver.dart` separado que documenta el
 /// README. Separada del adaptador de filesystem para poder testear las transformaciones de texto
 /// sin tocar disco, siguiendo el mismo patrón que `LogParser`/`TreePruner`.
+/// Estado del entrypoint respecto a Flutter Driver, detectado por `DriverInjector::detect_state`.
+/// Reemplaza al viejo `already_enabled: bool` -- ahora hay 4 casos distinguibles, no 2, desde que
+/// existe un handler custom propio de flutter-native-mcp (Fase B, key/tooltip/semantics/bounds
+/// reales) que puede convivir o no con lo que ya tenga la app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverExtensionState {
+    /// Ya llama a `enableFlutterMcpDriverExtension()` -- nada que tocar en el entrypoint (el
+    /// archivo generado sí se re-sincroniza, por si esta build trae una versión más nueva).
+    UpToDate,
+    /// Llama a `enableFlutterDriverExtension();` SIN argumentos (patrón viejo, propio o de una
+    /// invocación previa de esta tool antes de Fase B) -- se puede promover con seguridad.
+    UpgradableFromBareCall,
+    /// Llama a `enableFlutterDriverExtension(` CON argumentos propios (handler/finders/commands
+    /// de la app) -- no se toca: perderíamos su configuración.
+    CustomHandlerPresent,
+    /// No llama a `enableFlutterDriverExtension` en absoluto.
+    NotEnabled,
+}
+
 pub struct DriverInjector;
 
 impl DriverInjector {
-    const DRIVER_IMPORT: &'static str = "import 'package:flutter_driver/driver_extension.dart';";
-    const ENABLE_CALL: &'static str = "enableFlutterDriverExtension();";
+    const OLD_IMPORT: &'static str = "import 'package:flutter_driver/driver_extension.dart';";
+    const OLD_BARE_CALL: &'static str = "enableFlutterDriverExtension();";
+    const NEW_IMPORT: &'static str = "import 'flutter_mcp_driver_extension.dart';";
+    const NEW_CALL: &'static str = "enableFlutterMcpDriverExtension();";
 
-    /// True si el entrypoint ya tiene Flutter Driver habilitado (llamada agregada por esta
-    /// tool en una invocación previa, o a mano por el propio usuario).
-    pub fn already_enabled(source: &str) -> bool {
-        source.contains("enableFlutterDriverExtension(")
+    /// Nombre del archivo generado con el handler custom -- ver `HANDLER_SOURCE`.
+    pub const HANDLER_FILE_NAME: &'static str = "flutter_mcp_driver_extension.dart";
+    /// Contenido íntegro del handler Dart (Fase B: key/tooltip/semantics/bounds reales vía un
+    /// `DataHandler` custom que camina el árbol de `Element`/`RenderObject` en vivo). Única
+    /// fuente de verdad, reutilizada por `flutter_start_control` y documentada en README/SKILL.
+    pub const HANDLER_SOURCE: &'static str =
+        include_str!("../../../assets/flutter_mcp_driver_extension.dart");
+
+    /// Clasifica el estado actual de un entrypoint respecto a Flutter Driver. Ver
+    /// `DriverExtensionState` para el significado de cada variante.
+    pub fn detect_state(source: &str) -> DriverExtensionState {
+        if source.contains("enableFlutterMcpDriverExtension(") {
+            DriverExtensionState::UpToDate
+        } else if source.contains(Self::OLD_BARE_CALL) {
+            DriverExtensionState::UpgradableFromBareCall
+        } else if source.contains("enableFlutterDriverExtension(") {
+            DriverExtensionState::CustomHandlerPresent
+        } else {
+            DriverExtensionState::NotEnabled
+        }
     }
 
-    /// Inyecta el import y una llamada a `enableFlutterDriverExtension()` como primera
+    /// Inyecta el import y una llamada a `enableFlutterMcpDriverExtension()` como primera
     /// sentencia de `main()`. Devuelve `None` si no se encontró una función `main`
-    /// reconocible (`main(`, con boundary de identificador, seguido de un `{`).
+    /// reconocible (`main(`, con boundary de identificador, seguido de un `{`). No-op seguro
+    /// (devuelve el source sin cambios) si el estado ya no es `NotEnabled`.
     pub fn inject(source: &str) -> Option<String> {
-        if Self::already_enabled(source) {
+        if Self::detect_state(source) != DriverExtensionState::NotEnabled {
             return Some(source.to_string());
         }
 
         let with_import = Self::insert_import(source);
         Self::insert_enable_call(&with_import)
+    }
+
+    /// Promueve un entrypoint en estado `UpgradableFromBareCall` (llamada vieja sin handler) al
+    /// patrón nuevo: reemplaza el import y la llamada viejos por los nuevos. Reemplazo de
+    /// substring exacto y acotado (no un parser Dart) -- seguro porque `detect_state` ya
+    /// garantizó que el texto exacto está presente y que no hay argumentos custom que preservar.
+    /// Devuelve `None` si el estado no es `UpgradableFromBareCall`.
+    pub fn upgrade(source: &str) -> Option<String> {
+        if Self::detect_state(source) != DriverExtensionState::UpgradableFromBareCall {
+            return None;
+        }
+        Some(
+            source
+                .replacen(Self::OLD_IMPORT, Self::NEW_IMPORT, 1)
+                .replacen(Self::OLD_BARE_CALL, Self::NEW_CALL, 1),
+        )
     }
 
     fn insert_import(source: &str) -> String {
@@ -36,19 +90,19 @@ impl DriverInjector {
         match last_import_line {
             Some((idx, _)) => {
                 let mut lines: Vec<&str> = source.lines().collect();
-                lines.insert(idx + 1, Self::DRIVER_IMPORT);
+                lines.insert(idx + 1, Self::NEW_IMPORT);
                 lines.join("\n")
             }
-            None => format!("{}\n\n{source}", Self::DRIVER_IMPORT),
+            None => format!("{}\n\n{source}", Self::NEW_IMPORT),
         }
     }
 
     fn insert_enable_call(source: &str) -> Option<String> {
         let brace_idx = Self::find_main_brace_index(source)?;
-        let mut result = String::with_capacity(source.len() + Self::ENABLE_CALL.len() + 4);
+        let mut result = String::with_capacity(source.len() + Self::NEW_CALL.len() + 4);
         result.push_str(&source[..=brace_idx]);
         result.push_str("\n  ");
-        result.push_str(Self::ENABLE_CALL);
+        result.push_str(Self::NEW_CALL);
         result.push_str(&source[brace_idx + 1..]);
         Some(result)
     }
@@ -134,44 +188,62 @@ mod tests {
     const SIMPLE_MAIN: &str =
         "import 'package:flutter/material.dart';\n\nvoid main() {\n  runApp(const MyApp());\n}\n";
 
+    const OLD_BARE_SOURCE: &str = "import 'package:flutter_driver/driver_extension.dart';\n\nvoid main() {\n  enableFlutterDriverExtension();\n  runApp(const MyApp());\n}\n";
+    const CUSTOM_HANDLER_SOURCE: &str = "import 'package:flutter_driver/driver_extension.dart';\n\nvoid main() {\n  enableFlutterDriverExtension(handler: myHandler);\n  runApp(const MyApp());\n}\n";
+    const UP_TO_DATE_SOURCE: &str = "import 'flutter_mcp_driver_extension.dart';\n\nvoid main() {\n  enableFlutterMcpDriverExtension();\n  runApp(const MyApp());\n}\n";
+
     #[test]
-    fn test_already_enabled_detects_existing_call() {
-        assert!(!DriverInjector::already_enabled(SIMPLE_MAIN));
-        assert!(DriverInjector::already_enabled(
-            "void main() {\n  enableFlutterDriverExtension();\n  runApp(const MyApp());\n}\n"
-        ));
+    fn test_detect_state_classifies_all_four_cases() {
+        assert_eq!(
+            DriverInjector::detect_state(SIMPLE_MAIN),
+            DriverExtensionState::NotEnabled
+        );
+        assert_eq!(
+            DriverInjector::detect_state(OLD_BARE_SOURCE),
+            DriverExtensionState::UpgradableFromBareCall
+        );
+        assert_eq!(
+            DriverInjector::detect_state(CUSTOM_HANDLER_SOURCE),
+            DriverExtensionState::CustomHandlerPresent
+        );
+        assert_eq!(
+            DriverInjector::detect_state(UP_TO_DATE_SOURCE),
+            DriverExtensionState::UpToDate
+        );
     }
 
     #[test]
     fn test_inject_adds_import_and_call_before_run_app() {
         let injected = DriverInjector::inject(SIMPLE_MAIN).expect("debe inyectar");
 
-        assert!(injected.contains("import 'package:flutter_driver/driver_extension.dart';"));
+        assert!(injected.contains("import 'flutter_mcp_driver_extension.dart';"));
         let call_pos = injected
-            .find("enableFlutterDriverExtension();")
+            .find("enableFlutterMcpDriverExtension();")
             .expect("debe contener la llamada");
         let run_app_pos = injected.find("runApp(").expect("debe contener runApp");
         assert!(
             call_pos < run_app_pos,
-            "enableFlutterDriverExtension() debe ir antes de runApp()"
+            "enableFlutterMcpDriverExtension() debe ir antes de runApp()"
         );
     }
 
     #[test]
     fn test_inject_is_idempotent_when_already_enabled() {
-        let already = "import 'package:flutter_driver/driver_extension.dart';\n\nvoid main() {\n  enableFlutterDriverExtension();\n  runApp(const MyApp());\n}\n";
-        let result = DriverInjector::inject(already).expect("debe ser no-op exitoso");
-        assert_eq!(result, already);
+        let result = DriverInjector::inject(UP_TO_DATE_SOURCE).expect("debe ser no-op exitoso");
+        assert_eq!(result, UP_TO_DATE_SOURCE);
+
+        let result = DriverInjector::inject(CUSTOM_HANDLER_SOURCE).expect("debe ser no-op");
+        assert_eq!(result, CUSTOM_HANDLER_SOURCE);
     }
 
     #[test]
     fn test_inject_supports_async_main_and_ignores_domain_false_positive() {
         let source = "import 'package:flutter/material.dart';\n\nString domain() => 'x';\n\nFuture<void> main() async {\n  runApp(const MyApp());\n}\n";
         let injected = DriverInjector::inject(source).expect("debe inyectar en main async");
-        assert!(injected.contains("enableFlutterDriverExtension();"));
+        assert!(injected.contains("enableFlutterMcpDriverExtension();"));
         // No debe haber insertado nada dentro de `domain()`
         let domain_pos = injected.find("domain()").unwrap();
-        let call_pos = injected.find("enableFlutterDriverExtension();").unwrap();
+        let call_pos = injected.find("enableFlutterMcpDriverExtension();").unwrap();
         assert!(call_pos > domain_pos);
     }
 
@@ -185,11 +257,25 @@ mod tests {
     fn test_inject_prepends_import_when_no_existing_imports() {
         let source = "void main() {\n  print('hi');\n}\n";
         let injected = DriverInjector::inject(source).expect("debe inyectar");
-        assert!(
-            injected.starts_with(
-                "import 'package:flutter_driver/driver_extension.dart';\n\nvoid main()"
-            )
-        );
+        assert!(injected.starts_with("import 'flutter_mcp_driver_extension.dart';\n\nvoid main()"));
+    }
+
+    #[test]
+    fn test_upgrade_promotes_bare_call_to_new_handler() {
+        let upgraded = DriverInjector::upgrade(OLD_BARE_SOURCE).expect("debe promover");
+        assert!(upgraded.contains("import 'flutter_mcp_driver_extension.dart';"));
+        assert!(upgraded.contains("enableFlutterMcpDriverExtension();"));
+        assert!(!upgraded.contains("package:flutter_driver/driver_extension.dart"));
+        assert!(!upgraded.contains("enableFlutterDriverExtension();"));
+        // El resto del archivo (runApp) queda intacto.
+        assert!(upgraded.contains("runApp(const MyApp());"));
+    }
+
+    #[test]
+    fn test_upgrade_returns_none_for_non_upgradable_states() {
+        assert_eq!(DriverInjector::upgrade(SIMPLE_MAIN), None);
+        assert_eq!(DriverInjector::upgrade(CUSTOM_HANDLER_SOURCE), None);
+        assert_eq!(DriverInjector::upgrade(UP_TO_DATE_SOURCE), None);
     }
 
     #[test]

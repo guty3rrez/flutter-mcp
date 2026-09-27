@@ -1,3 +1,3 @@
 pub mod mcp_server;
 
-pub use mcp_server::FlutterMcpServer;
+pub use mcp_server::*;

@@ -32,3 +32,5 @@ Thumbs.db
 
 # Test outputs & screenshots
 *.png
+mutants.out*/
+.serena/
