@@ -12,10 +12,10 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/semantics.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_driver/driver_extension.dart';
 
 /// Namespace del protocolo custom sobre `FlutterDriver.requestData`. Reduce (sin eliminar del
@@ -101,10 +101,15 @@ _NodeDraft _describeElement(Element element) {
     draft.key = key.toString();
   }
 
-  if (widget is Tooltip && widget.message.isNotEmpty) {
+  if (widget is Tooltip) {
     // IconButton envuelve internamente a su hijo en un Tooltip cuando se le pasa `tooltip:` --
     // no hace falta un caso especial por tipo de widget, el walk llega a este nodo solo.
-    draft.tooltip = widget.message;
+    // `message` es `String?` -- `Tooltip.richMessage` (no soportado acá) puede ser la única
+    // fuente de contenido, en cuyo caso `message` queda null.
+    final String? message = widget.message;
+    if (message != null && message.isNotEmpty) {
+      draft.tooltip = message;
+    }
   }
 
   if (widget is Text && widget.data != null) {
