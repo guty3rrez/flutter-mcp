@@ -89,12 +89,20 @@ async fn test_e2e_wire_all_19_tools_happy_path() {
         .await
         .expect("Debe despachar tap");
     assert!(!res.is_error.unwrap_or(false));
-    // Validar que se enviaron automáticamente set_frame_sync y set_text_entry_emulation antes del tap
+    // Validar que se enviaron automáticamente set_frame_sync y set_text_entry_emulation antes del
+    // tap. "request_data" es el sondeo (una sola vez, cacheado) del handler custom de Fase B
+    // disparado por el flutter_snapshot de TOOL 2 -- este fake server no lo registra, así que
+    // get_diagnostics_tree cae al árbol legacy, tal como espera el resto de este test.
     {
         let commands = fake_vm.dispatched_commands.lock().await;
         assert_eq!(
             *commands,
-            vec!["set_frame_sync", "set_text_entry_emulation", "tap"]
+            vec![
+                "request_data",
+                "set_frame_sync",
+                "set_text_entry_emulation",
+                "tap"
+            ]
         );
     }
 

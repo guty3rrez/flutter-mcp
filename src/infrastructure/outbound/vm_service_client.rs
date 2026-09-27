@@ -49,6 +49,16 @@ const FAST_FAIL_GESTURE_TIMEOUT_MS: u64 = 800;
 /// capa de aplicación para `flutter_snapshot`, así el pre-chequeo ve exactamente lo mismo.
 const PRECHECK_TREE_DEPTH: u32 = 50;
 
+/// Mensaje namespaced del protocolo custom sobre `requestData` (Fase B: key/tooltip/semantics/
+/// bounds reales, ver `try_fetch_rich_tree`). Debe coincidir EXACTO con `_kGetRichTreeCommand`
+/// en `assets/flutter_mcp_driver_extension.dart`.
+const RICH_TREE_REQUEST_DATA_MESSAGE: &str = "__flutter_mcp_v1__:get_rich_tree";
+/// Texto EXACTO que Flutter Driver devuelve cuando `requestData` se llama sin ningún
+/// `DataHandler` registrado (confirmado leyendo `handler_factory.dart` del SDK de Flutter).
+/// Debe coincidir EXACTO con `kFlutterMcpNoHandlerSentinel` en
+/// `assets/flutter_mcp_driver_extension.dart`.
+const NO_REQUEST_DATA_HANDLER_SENTINEL: &str = "No requestData Extension registered";
+
 /// Estado compartido entre el adaptador y el task lector en background. Se agrupa en un solo
 /// struct (barato de clonar, son todo `Arc`) para que las funciones de bajo nivel que necesitan
 /// emitir RPCs o volcar eventos de stream no terminen con media docena de parámetros sueltos.
@@ -67,6 +77,14 @@ struct VmConnectionState {
     /// Restart recrea esa instancia con sus defaults (frameSync=true, sin emulación) porque
     /// re-ejecuta `main()`, así que `trigger_hot_restart`/`disconnect` resetean este flag.
     driver_extension_configured: Arc<AtomicBool>,
+    /// `None` = todavía no se sondeó en esta instancia de la app si expone el `DataHandler`
+    /// custom de Fase B (ver `try_fetch_rich_tree`). `Some(true)` = lo expone. `Some(false)` =
+    /// sondeado y confirmado que NO lo expone (entrypoint viejo, o Flutter Driver ni siquiera
+    /// habilitado) -- cacheado para no pagar una RPC `request_data` extra en cada
+    /// `get_diagnostics_tree` de una app que nunca actualizó su entrypoint. Reseteado por
+    /// `trigger_hot_restart`/`disconnect`, igual que `driver_extension_configured` -- un Hot
+    /// Restart puede promover una app vieja a la nueva.
+    rich_tree_supported: Arc<Mutex<Option<bool>>>,
 }
 
 impl VmConnectionState {
@@ -81,6 +99,7 @@ impl VmConnectionState {
             error_detector: Arc::new(Mutex::new(ErrorDetector::new())),
             precise_errors_enabled: Arc::new(AtomicBool::new(false)),
             driver_extension_configured: Arc::new(AtomicBool::new(false)),
+            rich_tree_supported: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -209,6 +228,72 @@ impl WebSocketVmServiceAdapter {
             )));
         }
         Ok(result)
+    }
+
+    /// Intenta obtener el árbol vía el `DataHandler` custom de Fase B
+    /// (`assets/flutter_mcp_driver_extension.dart`, inyectado por `flutter_start_control` o
+    /// documentado para setup manual), namespaced bajo `RICH_TREE_REQUEST_DATA_MESSAGE`.
+    /// `Some(json)` si la app lo expone y devolvió un árbol válido -- `get_diagnostics_tree` lo
+    /// usa tal cual, con `key`/`tooltip`/`semantics_label`/`bounds` reales. `None` si NO lo
+    /// expone (entrypoint viejo, Flutter Driver deshabilitado del todo, o -- indistinguible --
+    /// una app con su propio `DataHandler` que no reconoce nuestro namespace), en cuyo caso el
+    /// caller cae al camino legacy de siempre sin propagar ningún error.
+    ///
+    /// Llama a `send_rpc` directamente (no a `execute_driver_command_raw`) para poder inspeccionar
+    /// el error CRUDO de "-32601 method not found" antes de que se reescriba al mensaje largo de
+    /// `format_missing_driver_extension_error` -- necesario para cachear ese caso como
+    /// "definitivamente no soportado" igual que el centinela estándar de Flutter Driver.
+    ///
+    /// Cachea SOLO los resultados definitivos (soportado, o confirmado-no-soportado vía el
+    /// centinela o vía -32601). Un error genuino de transporte (timeout, JSON corrupto puntual)
+    /// NO se cachea -- se reintenta en la próxima llamada, para no enmascarar para siempre un
+    /// problema real detrás de un falso "no soportado".
+    async fn try_fetch_rich_tree(&self) -> Option<Value> {
+        if let Some(false) = *self.state.rich_tree_supported.lock().await {
+            return None;
+        }
+
+        let isolate_id = self.state.main_isolate_id_or_default().await;
+        let result = match self
+            .send_rpc(
+                "ext.flutter.driver",
+                json!({
+                    "command": "request_data",
+                    "isolateId": isolate_id,
+                    "message": RICH_TREE_REQUEST_DATA_MESSAGE,
+                    "timeout": "3000"
+                }),
+            )
+            .await
+        {
+            Ok(res) => res,
+            Err(ApplicationError::DriverError(err)) if is_method_not_found(&err) => {
+                // Flutter Driver ni siquiera está habilitado -- definitivo, cachear. (El
+                // fallback legacy de `get_diagnostics_tree` no depende de Flutter Driver, así
+                // que esto no rompe `flutter_snapshot` para esta app, solo se pierde Fase B).
+                *self.state.rich_tree_supported.lock().await = Some(false);
+                return None;
+            }
+            Err(_) => return None, // error genuino (timeout, conexión), no cachea
+        };
+
+        let message = result
+            .get("response")
+            .and_then(|r| r.get("message"))
+            .and_then(|m| m.as_str())?;
+
+        if message == NO_REQUEST_DATA_HANDLER_SENTINEL {
+            *self.state.rich_tree_supported.lock().await = Some(false);
+            return None;
+        }
+
+        match serde_json::from_str::<Value>(message) {
+            Ok(tree) => {
+                *self.state.rich_tree_supported.lock().await = Some(true);
+                Some(tree)
+            }
+            Err(_) => None, // JSON corrupto puntual -- no cachea
+        }
     }
 
     /// Configura, una única vez por instancia activa de `FlutterDriverExtension`, frame sync
@@ -633,6 +718,7 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
         self.state
             .driver_extension_configured
             .store(false, Ordering::SeqCst);
+        *self.state.rich_tree_supported.lock().await = None;
 
         if let Some(handle) = self.reader_task.lock().await.take() {
             handle.abort();
@@ -667,7 +753,19 @@ impl FlutterVmPort for WebSocketVmServiceAdapter {
     /// la RPC realmente invocada era otra -- por eso `flutter_snapshot` nunca mostró texto real
     /// contra apps reales pese a pasar sus tests (que usan fixtures con el shape equivocado).
     /// Con fallback a la RPC vieja si el SDK conectado no soporta la nueva.
+    ///
+    /// Antes de cualquiera de las dos RPC del widget inspector, intenta el árbol "rico" del
+    /// `DataHandler` custom de Fase B (`try_fetch_rich_tree`) -- key/tooltip/semantics_label
+    /// siguen sin ser recuperables por NINGUNA combinación de parámetros de
+    /// `getRootWidgetTree`/`getRootWidgetSummaryTree` (confirmado leyendo el SDK: `key` se
+    /// filtra a nivel `DiagnosticLevel.hidden` sin importar los flags, y `tooltip`/
+    /// `semanticsLabel` solo aparecen en `getDetailsSubtree`, que es por-nodo). Si el árbol rico
+    /// no está disponible, cae exactamente al camino de siempre, sin cambios.
     async fn get_diagnostics_tree(&self, subtree_depth: u32) -> Result<Value> {
+        if let Some(rich_tree) = self.try_fetch_rich_tree().await {
+            return Ok(rich_tree);
+        }
+
         let isolate_id = self.state.main_isolate_id_or_default().await;
 
         let result = self
@@ -891,6 +989,10 @@ el contenedor correcto -- confirmá con 'flutter_snapshot'."
         self.state
             .driver_extension_configured
             .store(false, Ordering::SeqCst);
+        // Un Hot Restart puede ser justamente el que promueve a la app de "sin handler custom"
+        // a "con handler custom" (ej. tras `flutter_start_control` reescribiendo el entrypoint)
+        // -- hay que volver a sondear, no asumir que el resultado de antes sigue siendo válido.
+        *self.state.rich_tree_supported.lock().await = None;
 
         Ok(())
     }

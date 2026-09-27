@@ -554,9 +554,21 @@ impl FlutterMcpServer {
                     outcome.entrypoint_path
                 ))]))
             }
+            Ok(outcome) if outcome.custom_handler_present => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "El entrypoint '{}' ya le pasa su propio 'handler'/'finders'/'commands' a enableFlutterDriverExtension -- no se tocó nada para no perder esa configuración. Hot Restart ejecutado para asegurar que la extensión esté activa. Nota: flutter_snapshot seguirá funcionando, pero sin key/tooltip/semantics/bounds reales (esa mejora requiere adoptar manualmente el handler custom de flutter-native-mcp -- ver README, sección 'Compatibilidad y riesgos').",
+                    outcome.entrypoint_path
+                ))]))
+            }
+            Ok(outcome) if outcome.upgraded_from_legacy => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "El entrypoint '{}' tenía el patrón viejo de Flutter Driver (sin key/tooltip/semantics/bounds reales) y se promovió automáticamente al handler custom nuevo. Hot Restart ejecutado -- flutter_snapshot ya puede mostrar esos datos reales.",
+                    outcome.entrypoint_path
+                ))]))
+            }
             Ok(outcome) if outcome.already_enabled => {
                 Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "El entrypoint '{}' ya tenía Flutter Driver habilitado. Hot Restart ejecutado para asegurar que la extensión esté activa.",
+                    "El entrypoint '{}' ya tenía el handler custom de flutter-native-mcp activo (key/tooltip/semantics/bounds reales). Se resincronizó el archivo generado y se ejecutó Hot Restart para asegurar que la extensión esté activa.",
                     outcome.entrypoint_path
                 ))]))
             }
@@ -567,7 +579,7 @@ impl FlutterMcpServer {
                     ""
                 };
                 Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "Flutter Driver inyectado en '{}' y Hot Restart ejecutado con éxito -- la app ahora acepta comandos de control.{revert_note}",
+                    "Flutter Driver inyectado en '{}' y Hot Restart ejecutado con éxito -- la app ahora acepta comandos de control, incluyendo key/tooltip/semantics/bounds reales en flutter_snapshot.{revert_note}",
                     outcome.entrypoint_path
                 ))]))
             }

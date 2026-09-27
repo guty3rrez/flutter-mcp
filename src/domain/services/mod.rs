@@ -5,7 +5,7 @@ pub mod log_parser;
 pub mod timeline_analyzer;
 pub mod tree_pruner;
 
-pub use driver_injector::{DriverInjector, PubspecEditor};
+pub use driver_injector::{DriverExtensionState, DriverInjector, PubspecEditor};
 pub use error_detector::ErrorDetector;
 pub use finder_resolver::{FinderResolver, ResolveOutcome};
 pub use log_parser::LogParser;
