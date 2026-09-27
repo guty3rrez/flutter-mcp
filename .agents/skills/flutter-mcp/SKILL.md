@@ -30,18 +30,27 @@ No cargar para: pruebas puramente unitarias que no interactúen con una app Flut
 > **PROHIBIDO MODIFICAR `lib/main.dart` PARA HABILITAR FLUTTER DRIVER.**
 > Modificar el archivo principal de producción introduce dependencias de test en el código final, ensucia el árbol de Git y genera riesgos de filtración a builds de release.
 
-En su lugar, se debe utilizar siempre un **entrypoint secundario**:
+En su lugar, se debe utilizar siempre un **entrypoint secundario**, junto con el handler custom
+que expone `key`/`tooltip`/`semantics_label`/`bounds` reales en `flutter_snapshot` (copiar tal
+cual desde `assets/flutter_mcp_driver_extension.dart` del repo de `flutter-native-mcp`):
 
 ```dart
 // lib/main_driver.dart
-import 'package:flutter_driver/driver_extension.dart';
 import 'main.dart' as app;
+import 'flutter_mcp_driver_extension.dart';
 
 void main() {
-  enableFlutterDriverExtension();
+  enableFlutterMcpDriverExtension();
   app.main();
 }
 ```
+
+> [!NOTE]
+> **Compatibilidad**: si la app objetivo todavía usa el patrón viejo (`enableFlutterDriverExtension()`
+> sin argumentos, sin `flutter_mcp_driver_extension.dart`), todas las tools siguen funcionando
+> igual -- `flutter_snapshot` simplemente no muestra `key`/`tooltip`/`semantics_label`/`bounds`
+> reales. `flutter_start_control` detecta y promueve automáticamente ese patrón viejo al nuevo la
+> próxima vez que se llame.
 
 ---
 
@@ -54,8 +63,9 @@ void main() {
    ```bash
    flutter pub add --dev flutter_driver --sdk=flutter
    ```
-2. **Crear o verificar `lib/main_driver.dart`**:
-   Si no existe, crear el archivo con el snippet indicado arriba.
+2. **Crear o verificar `lib/main_driver.dart` y `lib/flutter_mcp_driver_extension.dart`**:
+   Si no existen, crear ambos archivos con el snippet indicado arriba (o dejar que
+   `flutter_start_control` los genere automáticamente si la app ya está conectada).
 3. **Ejecutar la app apuntando al entrypoint del driver**:
    - En Linux Desktop:
      ```bash

@@ -81,15 +81,19 @@ cp target/release/flutter-mcp ~/.local/bin/
 ## ⚙️ Configuration
 
 ### 1. Enable Flutter Driver Extension in Your App
-In your Flutter project, ensure `enableFlutterDriverExtension()` is enabled during test/debug mode:
+In your Flutter project, add two files: the driver extension handler (copy it verbatim from this
+repo's [`assets/flutter_mcp_driver_extension.dart`](assets/flutter_mcp_driver_extension.dart) —
+it walks the live widget tree to expose real `key`/`tooltip`/`semantics_label`/`bounds` in
+`flutter_snapshot`, not just the built-in tap/scroll/etc. commands) and a driver entrypoint that
+registers it:
 
 ```dart
 // lib/main_driver.dart
-import 'package:flutter_driver/driver_extension.dart';
 import 'package:my_app/main.dart' as app;
+import 'flutter_mcp_driver_extension.dart';
 
 void main() {
-  enableFlutterDriverExtension();
+  enableFlutterMcpDriverExtension();
   app.main();
 }
 ```
@@ -106,10 +110,16 @@ flutter run -d linux -t lib/main_driver.dart
 If you'd rather not maintain a separate entrypoint, launch the app normally (`flutter run -d linux`, no `-t` flag) and call `flutter_start_control` **after** `flutter_connect`:
 
 1. `flutter_driver` must already be a resolved dependency of the project (declared in `pubspec.yaml` and present in `pubspec.lock`). If it isn't, `flutter_start_control` adds it to `dev_dependencies` and stops there — run `flutter pub get` and **fully restart** `flutter run` (a Hot Restart alone can't resolve a brand-new dependency), then call the tool again.
-2. Once resolved, `flutter_start_control` patches `lib/main.dart` (or the `entrypoint` you pass) to call `enableFlutterDriverExtension()` before `runApp()`, and triggers a Hot Restart so `main()` re-executes with the patch applied — no process relaunch required. It's idempotent: if the entrypoint already has the extension enabled, it only triggers the Hot Restart.
-3. By default the source change stays on disk (so it survives further Hot Reloads/Restarts in the session). Pass `revert_after_restart: true` to restore the original file right after the restart — the extension stays registered in the running app's binding regardless, since that registration lives in memory, not in the source file.
+2. Once resolved, `flutter_start_control` writes `lib/flutter_mcp_driver_extension.dart` and patches `lib/main.dart` (or the `entrypoint` you pass) to call `enableFlutterMcpDriverExtension()` before `runApp()`, then triggers a Hot Restart so `main()` re-executes with the patch applied — no process relaunch required. It's idempotent and self-upgrading: calling it again on an entrypoint that already has the extension enabled just re-syncs the generated file and restarts; calling it on an entrypoint still using the older bare `enableFlutterDriverExtension()` call (from before this handler existed) transparently upgrades it in place.
+3. By default the source change stays on disk (so it survives further Hot Reloads/Restarts in the session). Pass `revert_after_restart: true` to restore the original file right after the restart — the extension stays registered in the running app's binding regardless, since that registration lives in memory, not in the source file. (The generated `lib/flutter_mcp_driver_extension.dart` file itself is never reverted/deleted — it's harmless and unimported if `main.dart` goes back to its original content.)
 
 This works the same way under [FVM](https://fvm.app/): the injected `sdk: flutter` dependency resolves against whichever Flutter SDK is pinned for the project (`.fvm/flutter_sdk`), same as any other dependency.
+
+#### ⚠️ Compatibility and risks
+
+- **Apps that don't adopt the new handler keep working exactly as before.** If your app's `main_driver.dart` (or a `flutter_start_control`-patched `main.dart`) still calls the bare `enableFlutterDriverExtension()`, every tool (`flutter_tap`, `flutter_snapshot`, etc.) keeps working unchanged — `flutter_snapshot` just won't show real `key`/`tooltip`/`semantics_label`/`bounds`, and `tooltip`/`semantics` finders keep using the degraded 800ms fast-fail precheck timeout instead of the full 5000ms. This is detected automatically and transparently on every connection; there's nothing to configure.
+- **Apps with their own custom `DataHandler`.** If your app already passes its own `handler`/`finders`/`commands` to `enableFlutterDriverExtension()` for its own testing needs, `flutter_start_control` detects this and leaves it untouched (adopting the new handler would silently replace yours). You get the same degraded behavior as above, permanently, unless you manually merge both handlers yourself.
+- **`key` is structurally impossible to get any other way.** Flutter's own widget-inspector service extensions (`getRootWidgetTree`, `getDetailsSubtree`, etc.) filter a widget's `key` out of every response at the framework level, regardless of any parameter combination — this custom handler (which reads `widget.key` directly from the live `Element` tree, bypassing the inspector entirely) is the only way `flutter_snapshot` can ever report it.
 
 ### 2. Configure MCP Clients
 
