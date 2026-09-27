@@ -621,7 +621,11 @@ where
             let response = match responder(&method, &params) {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }),
                 Err(message) => {
-                    json!({ "jsonrpc": "2.0", "id": request["id"], "error": { "message": message } })
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "error": { "code": -32601, "message": message }
+                    })
                 }
             };
             let _ = sink.send(Message::Text(response.to_string().into())).await;
@@ -652,4 +656,39 @@ async fn get_diagnostics_tree_falls_back_to_legacy_rpc_when_new_one_is_unsupport
         .await
         .expect("debe caer al fallback en vez de propagar el error");
     assert_eq!(tree["description"], "Scaffold");
+}
+
+#[tokio::test]
+async fn driver_method_not_found_returns_helpful_main_driver_instruction() {
+    let uri = spawn_fake_vm_service_fallible(|method, _| match method {
+        "getVM" => Ok(getvm_result()),
+        "ext.flutter.driver" => Err("Method not found: ext.flutter.driver".to_string()),
+        _ => Ok(ok_driver_result()),
+    })
+    .await;
+
+    let adapter = WebSocketVmServiceAdapter::new();
+    adapter.connect(&uri).await.expect("debe conectar");
+
+    let err = adapter
+        .dispatch_gesture(&Gesture::Tap {
+            finder: Finder::by_key("any_button"),
+            timeout_ms: Some(1000),
+        })
+        .await
+        .expect_err("debe fallar con el error de flutter driver no habilitado");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("lib/main_driver.dart"),
+        "El mensaje debe sugerir lib/main_driver.dart: {msg}"
+    );
+    assert!(
+        msg.contains("enableFlutterDriverExtension"),
+        "El mensaje debe sugerir enableFlutterDriverExtension: {msg}"
+    );
+    assert!(
+        msg.contains("lib/main.dart"),
+        "El mensaje debe recordar no tocar lib/main.dart: {msg}"
+    );
 }

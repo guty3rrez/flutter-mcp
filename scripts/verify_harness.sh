@@ -14,7 +14,7 @@ cargo fmt --check || {
 echo -e "\n[2/5] Ejecutando análisis estático (cargo clippy)..."
 cargo clippy --all-targets -- -D warnings
 
-echo -e "\n[3/5] Ejecutando suite de pruebas unitarias e integración..."
+echo -e "\n[3/5] Ejecutando suite completa de pruebas (unitarias, integración y E2E wire)..."
 cargo test --all-targets
 
 echo -e "\n[4/5] Ejecutando auditoría de seguridad de dependencias (cargo audit)..."
@@ -35,4 +35,6 @@ fi
 
 echo -e "\n=========================================================="
 echo "  ✅ Todos los gates de calidad y seguridad pasaron con éxito!"
+echo "  💡 Para ejecutar pruebas E2E reales contra Auralis en vivo:"
+echo "     ./scripts/run_e2e_auralis.sh [--flutter-run]"
 echo "=========================================================="

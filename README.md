@@ -145,6 +145,18 @@ claude mcp add flutter_mcp -s user -- /path/to/flutter-mcp
 }
 ```
 
+### 3. 🤖 Official AI Agent Skill (`flutter-mcp`)
+
+This repository bundles an official AI agent skill at `.agents/skills/flutter-mcp/SKILL.md` (and server instructions at `instructions.md`). This skill guides AI assistants like **Antigravity** or **Claude Code** to:
+- Always use the non-destructive `lib/main_driver.dart` pattern without ever touching production `lib/main.dart`.
+- Connect and operate all 19 tools in the optimal sequence (inspecting widgets with `flutter_snapshot`, performing focus-first gestures, error diagnostics, and GPU screenshots).
+- Provide immediate, actionable guidance if the target app returns `-32601 Method not found`.
+
+To link the skill globally for your AI agents:
+```bash
+ln -sfn $(pwd)/.agents/skills/flutter-mcp ~/.agents/skills/flutter-mcp
+```
+
 ---
 
 ## 🏗️ Architecture
@@ -204,13 +216,24 @@ We welcome community contributions! Please review our [Contributing Guide](CONTR
 2. **Mandatory Quality Gate**: Every pull request must pass the automated GitHub Actions CI suite:
    - `cargo fmt --check`
    - `cargo clippy --all-targets -- -D warnings`
-   - `cargo test --all-targets` (Unit, Integration, and BDD Gherkin tests)
+   - `cargo test --all-targets` (Unit, Integration, BDD Gherkin, and Wire E2E tests covering all 19 MCP tools)
    - `cargo audit`
 
 Run the entire verification suite locally before opening a PR:
 ```bash
 ./scripts/verify_harness.sh
 ```
+
+### 🧪 Live End-to-End (E2E) Testing with Auralis
+For live validation against a real native Flutter Linux Desktop application ([Auralis](https://github.com/guty3rrez/auralis)), use the automated runner:
+```bash
+# Fast mode using precompiled debug bundle
+./scripts/run_e2e_auralis.sh
+
+# Or compile and launch from scratch with flutter run
+./scripts/run_e2e_auralis.sh --flutter-run
+```
+This boots Auralis, discovers the Dart VM Service WebSocket, executes screenshots, taps, text searches, live logs, frame jank timeline analysis, and cleanly shuts down.
 
 ---
 

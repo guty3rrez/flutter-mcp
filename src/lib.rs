@@ -16,7 +16,11 @@ pub use domain::services::{
     DriverInjector, ErrorDetector, LogParser, PubspecEditor, TimelineAnalyzer, TreePruner,
 };
 
-pub use infrastructure::inbound::FlutterMcpServer;
+pub use infrastructure::inbound::{
+    ConnectParams, DriverRawParams, EnterTextParams, FlutterMcpServer, FlutterPopParams,
+    GetErrorsParams, GetLogsParams, GetPerformanceParams, GetTextParams, ScreenshotParams,
+    ScrollIntoViewParams, ScrollParams, StartControlParams, TapParams, WaitForParams,
+};
 pub use infrastructure::outbound::{
     LocalFileSystemAdapter, MockVmServiceAdapter, WebSocketVmServiceAdapter,
 };

@@ -145,6 +145,18 @@ claude mcp add flutter_mcp -s user -- /ruta/a/flutter-mcp
 }
 ```
 
+### 3. 🤖 Skill Oficial para Agentes IA (`flutter-mcp`)
+
+El repositorio incluye una skill oficial para agentes IA en `.agents/skills/flutter-mcp/SKILL.md` (junto con las instrucciones del servidor en `instructions.md`). Esta skill instruye a asistentes como **Antigravity** o **Claude Code** para:
+- Emplear siempre el patrón no destructivo `lib/main_driver.dart` sin tocar el archivo de producción `lib/main.dart`.
+- Conectar y operar las 19 herramientas del servidor en orden óptimo (inspección de widgets con `flutter_snapshot`, interacciones con foco previo, diagnóstico de excepciones y captura de GPU).
+- Resolver fallas de forma reactiva: si la app objetivo arroja `-32601 Method not found`, el servidor devuelve un diagnóstico guiado paso a paso con el snippet de código exacto.
+
+Para enlazar la skill globalmente en tu entorno de agentes:
+```bash
+ln -sfn $(pwd)/.agents/skills/flutter-mcp ~/.agents/skills/flutter-mcp
+```
+
 ---
 
 ## 🏗️ Arquitectura
@@ -204,13 +216,24 @@ graph LR
 2. **Control de Calidad Obligatorio**: Todo Pull Request debe pasar sin excepciones la suite de CI de GitHub Actions:
    - `cargo fmt --check`
    - `cargo clippy --all-targets -- -D warnings`
-   - `cargo test --all-targets` (Pruebas unitarias, de integración y BDD Gherkin)
+   - `cargo test --all-targets` (Pruebas unitarias, de integración, BDD Gherkin y E2E wire cubriendo las 19 tools MCP)
    - `cargo audit`
 
 Ejecuta la suite completa de verificación localmente antes de abrir tu PR:
 ```bash
 ./scripts/verify_harness.sh
 ```
+
+### 🧪 Pruebas End-to-End (E2E) en Vivo con Auralis
+Para validación en tiempo real contra una aplicación nativa real de Flutter en Linux Desktop ([Auralis](https://github.com/guty3rrez/auralis)), utiliza el ejecutor automatizado:
+```bash
+# Modo rápido usando el bundle precompilado
+./scripts/run_e2e_auralis.sh
+
+# O compilar y lanzar desde cero con flutter run
+./scripts/run_e2e_auralis.sh --flutter-run
+```
+Este script inicia Auralis, descubre el WebSocket del Dart VM Service, captura pantallas de framebuffer GPU, realiza clics e ingresos de texto, analiza jank en timeline, lee logs y apaga limpiamente la app.
 
 ---
 

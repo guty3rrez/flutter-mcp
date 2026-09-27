@@ -193,7 +193,16 @@ impl WebSocketVmServiceAdapter {
             obj.insert("isolateId".into(), json!(isolate_id));
         }
 
-        let result = self.send_rpc("ext.flutter.driver", params).await?;
+        let result = match self.send_rpc("ext.flutter.driver", params).await {
+            Ok(res) => res,
+            Err(ApplicationError::DriverError(err)) if is_method_not_found(&err) => {
+                return Err(ApplicationError::DriverError(
+                    format_missing_driver_extension_error(),
+                ));
+            }
+            Err(e) => return Err(e),
+        };
+
         if driver_result_is_error(&result) {
             return Err(ApplicationError::DriverError(driver_error_message(
                 command, &result,
@@ -302,6 +311,31 @@ impl Default for WebSocketVmServiceAdapter {
     fn default() -> Self {
         Self::new()
     }
+}
+/// Comprueba si un error devuelto por la llamada RPC corresponde a que el método
+/// no existe en el Dart VM Service (código JSON-RPC estándar -32601 o "Method not found").
+pub(crate) fn is_method_not_found(err: &str) -> bool {
+    err.contains("-32601") || err.to_ascii_lowercase().contains("method not found")
+}
+
+/// Genera un mensaje de error descriptivo con instrucciones paso a paso para habilitar
+/// Flutter Driver mediante el patrón no destructivo `lib/main_driver.dart`, evitando
+/// que el agente o usuario modifique el archivo de producción `lib/main.dart`.
+pub(crate) fn format_missing_driver_extension_error() -> String {
+    "La extensión Flutter Driver no está habilitada en la aplicación en ejecución (ext.flutter.driver no encontrado / -32601).\n\
+     Para utilizar herramientas de interacción (tap, enter_text, screenshot, wait_for, etc.) sin modificar el archivo original de producción (lib/main.dart):\n\
+     1. Agrega flutter_driver a dev_dependencies en pubspec.yaml:\n\
+        flutter pub add --dev flutter_driver --sdk=flutter\n\
+     2. Crea el archivo 'lib/main_driver.dart':\n\
+        import 'package:flutter_driver/driver_extension.dart';\n\
+        import 'main.dart' as app;\n\
+        \n\
+        void main() {\n\
+          enableFlutterDriverExtension();\n\
+          app.main();\n\
+        }\n\
+     3. Ejecuta la aplicación apuntando al entrypoint del driver:\n\
+        flutter run -d <device> -t lib/main_driver.dart".to_string()
 }
 
 /// Detecta si un resultado de `ext.flutter.driver` señala una falla lógica reportada por Flutter
@@ -987,5 +1021,24 @@ mod tests {
         let result = json!({ "isError": true, "response": "Finder ambiguo: 2 matches" });
         let msg = driver_error_message("tap", &result);
         assert!(!msg.contains("flutter_snapshot"));
+    }
+
+    #[test]
+    fn is_method_not_found_detects_json_rpc_code_and_message() {
+        assert!(is_method_not_found(
+            r#"{"code":-32601,"message":"Method not found"}"#
+        ));
+        assert!(is_method_not_found("Method not found: ext.flutter.driver"));
+        assert!(!is_method_not_found(
+            "TimeoutException: Future not completed"
+        ));
+    }
+
+    #[test]
+    fn format_missing_driver_extension_error_contains_main_driver_snippet() {
+        let err = format_missing_driver_extension_error();
+        assert!(err.contains("lib/main_driver.dart"));
+        assert!(err.contains("enableFlutterDriverExtension()"));
+        assert!(err.contains("lib/main.dart"));
     }
 }
